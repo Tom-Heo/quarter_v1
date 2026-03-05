@@ -25,16 +25,12 @@ def build_aligned_df(
     klines: pd.DataFrame,
     funding: pd.DataFrame,
     basis: pd.DataFrame,
-    ls_ratio: pd.DataFrame,
-    oi: pd.DataFrame,
 ) -> pd.DataFrame:
     df = klines.set_index("timestamp")
 
     for sub_df, col in [
         (funding, "funding_rate"),
         (basis, "basis"),
-        (ls_ratio, "ls_ratio"),
-        (oi, "oi"),
     ]:
         s = sub_df.set_index("timestamp")[col]
         s = s[~s.index.duplicated(keep="first")]
@@ -82,8 +78,6 @@ def compute_features(
         return np.clip(np.log(ratio), -CLIP_BOUND, CLIP_BOUND)
 
     log_V = _log_return(V)
-    log_ls = _log_return(df["ls_ratio"].values)
-    log_oi = _log_return(df["oi"].values)
 
     funding = df["funding_rate"].values[1:]
     basis_raw = df["basis"].values[1:]
@@ -98,7 +92,6 @@ def compute_features(
         f1, f2, f3, f4,
         log_V,
         funding, basis_raw,
-        log_ls, log_oi,
     ]).astype(np.float32)
 
     assert features.shape[1] == NUM_FEATURES
@@ -183,23 +176,17 @@ def build_dataset_pipeline(start_date: str, end_date: str, out_path: str) -> Non
 
     fetcher = BinanceFetcher()
 
-    print(f"[1/5] klines 수집 중 ({start_date} ~ {end_date})")
+    print(f"[1/3] klines 수집 중 ({start_date} ~ {end_date})")
     klines = fetcher.fetch_klines(start_ms, end_ms, label="klines")
 
-    print(f"[2/5] 펀딩비 수집 중")
+    print(f"[2/3] 펀딩비 수집 중")
     funding = fetcher.fetch_funding_rate(start_ms, end_ms, label="펀딩비")
 
-    print(f"[3/5] 베이시스 수집 중")
+    print(f"[3/3] 베이시스 수집 중")
     basis = fetcher.fetch_basis(start_ms, end_ms, label="베이시스")
 
-    print(f"[4/5] 롱숏비 수집 중")
-    ls_ratio = fetcher.fetch_long_short_ratio(start_ms, end_ms, label="롱숏비")
-
-    print(f"[5/5] 미결제약정 수집 중")
-    oi = fetcher.fetch_oi(start_ms, end_ms, label="미결제약정")
-
     print("데이터 정렬 중 ...")
-    df = build_aligned_df(klines, funding, basis, ls_ratio, oi)
+    df = build_aligned_df(klines, funding, basis)
     print(f"  정렬 완료: {len(df):,}행")
 
     print("피처 엔지니어링 중 ...")

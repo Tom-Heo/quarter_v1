@@ -6,8 +6,6 @@ FEATURES = [
     "log_volume",
     "funding_rate",
     "basis",
-    "log_ls_ratio",
-    "log_oi",
 ]
 
 NUM_FEATURES = len(FEATURES)

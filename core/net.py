@@ -13,7 +13,7 @@ class QuarterNet(nn.Module):
     Output: (B, S, 5)
     """
 
-    def __init__(self, features: int = 9, d_model: int = 4096):
+    def __init__(self, features: int = 7, d_model: int = 4096):
         super().__init__()
         self.embedding = EmbeddingBlock(features, d_model)
         self.quarter1 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)

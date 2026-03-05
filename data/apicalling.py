@@ -29,6 +29,9 @@ class BinanceFetcher:
                 print(f"\n  [rate-limit {resp.status_code}] {wait}s 대기 후 재시도 ({attempt + 1}/{self._MAX_RETRIES})")
                 time.sleep(wait)
                 continue
+            if resp.status_code == 400:
+                print(f"\n  [400 Bad Request] 해당 구간 데이터 없음 — 건너뜀")
+                return []
             resp.raise_for_status()
             return resp.json()
         resp.raise_for_status()
@@ -177,22 +180,3 @@ class BinanceFetcher:
             label=label,
         )
 
-    def fetch_long_short_ratio(self, start_ms: int, end_ms: int, label: str = "") -> pd.DataFrame:
-        return self._fetch_data_endpoint(
-            url=f"{self.DATA}/globalLongShortAccountRatio",
-            value_col="longShortRatio",
-            out_col="ls_ratio",
-            start_ms=start_ms,
-            end_ms=end_ms,
-            label=label,
-        )
-
-    def fetch_oi(self, start_ms: int, end_ms: int, label: str = "") -> pd.DataFrame:
-        return self._fetch_data_endpoint(
-            url=f"{self.DATA}/openInterestHist",
-            value_col="sumOpenInterest",
-            out_col="oi",
-            start_ms=start_ms,
-            end_ms=end_ms,
-            label=label,
-        )
