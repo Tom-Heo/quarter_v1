@@ -1,5 +1,8 @@
 FEATURES = [
-    "f1", "f2", "f3", "f4",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
     "log_volume",
     "funding_rate",
     "basis",
@@ -33,7 +36,7 @@ HDF5_COMPRESSION_OPTS = 4
 DATASET_DIR = "dataset"
 CHECKPOINT_DIR = "checkpoints"
 
-TRAIN_DATASET_START = "2024-01-01"
+TRAIN_DATASET_START = "2020-01-01"
 TRAIN_DATASET_END = "2025-06-30"
 EVAL_DATASET_START = "2025-07-01"
 EVAL_DATASET_END = "2025-12-31"
