@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from .heo import Heo
 from .block import EmbeddingBlock, QuarterBlock
 
 
