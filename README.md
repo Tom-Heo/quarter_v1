@@ -227,5 +227,10 @@ matplotlib>=3.9
 ```
 
 ```bash
+git clone https://github.com/Tom-Heo/quarter_v1.git
+cd quarter_v1
 pip install -r requirements.txt
+apt-get update && apt-get install -y fonts-nanum
+rm -rf $(python -c "import matplotlib; print(matplotlib.get_cachedir())")
+python train.py --resume
 ```

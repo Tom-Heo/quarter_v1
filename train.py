@@ -28,11 +28,14 @@ from config import (
 )
 from core.heo import Heo
 from core.net import QuarterNet
-from data.dataset import QuarterDataset, build_dataset_pipeline
+from data.dataset import QuarterDataset, build_dataset_pipeline, is_legacy_hdf5
 
 _korean_fonts = ["NanumGothic", "Malgun Gothic", "AppleGothic", "DejaVu Sans"]
 for _f in _korean_fonts:
-    if any(_f.lower() in f.name.lower() for f in matplotlib.font_manager.fontManager.ttflist):
+    if any(
+        _f.lower() in f.name.lower()
+        for f in matplotlib.font_manager.fontManager.ttflist
+    ):
         plt.rcParams["font.family"] = _f
         break
 plt.rcParams["axes.unicode_minus"] = False
@@ -45,7 +48,7 @@ WEIGHT_DECAY = 1e-4
 SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
 EVAL_INTERVAL = 256
-LOG_INTERVAL = 64
+LOG_INTERVAL = 32
 OUTPUT_DIR = "outputs"
 
 
@@ -161,6 +164,11 @@ def _ensure_datasets() -> tuple[Path, Path]:
     )
     eval_path = ds_dir / f"{BINANCE_SYMBOL}_{EVAL_DATASET_START}_{EVAL_DATASET_END}.h5"
 
+    for p in [train_path, eval_path]:
+        if is_legacy_hdf5(str(p)):
+            _log(f"구 스키마 감지 → 삭제: {p}")
+            p.unlink()
+
     if not train_path.exists():
         _log(f"학습 데이터셋 생성 중: {train_path}")
         build_dataset_pipeline(TRAIN_DATASET_START, TRAIN_DATASET_END, str(train_path))
@@ -208,7 +216,7 @@ def _evaluate(
     eval_dataset: QuarterDataset,
     criterion: nn.Module,
     device: torch.device,
-    n_samples: int = 10,
+    n_samples: int = 1,
 ) -> float:
     model.eval()
     indices = torch.randint(0, len(eval_dataset), (n_samples,))

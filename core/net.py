@@ -4,95 +4,48 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
+from config import NUM_FEATURES, NUM_TARGET_FEATURES, SEQ_LEN, TARGET_LEN
+
 from .block import EmbeddingBlock, QuarterBlock
+
+_NUM_BLOCKS = 32
+_MAX_SEQ_LEN = SEQ_LEN + TARGET_LEN
 
 
 class QuarterNet(nn.Module):
     """
-    Input: (B, S, Features)
-    Output: (B, S, 5)
+    Input:  (B, SEQ_LEN, NUM_FEATURES)
+    Output: (B, TARGET_LEN, NUM_TARGET_FEATURES)
     """
 
-    def __init__(self, features: int = 7, d_model: int = 2048):
+    def __init__(
+        self,
+        features: int = NUM_FEATURES,
+        target_features: int = NUM_TARGET_FEATURES,
+        target_len: int = TARGET_LEN,
+        d_model: int = 2048,
+        num_heads: int = 32,
+        num_blocks: int = _NUM_BLOCKS,
+        max_seq_len: int = _MAX_SEQ_LEN,
+    ):
         super().__init__()
+        self.target_len = target_len
+
         self.embedding = EmbeddingBlock(features, d_model)
-        self.quarter1 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter2 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter3 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter4 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter5 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter6 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter7 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter8 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter9 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter10 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter11 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter12 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter13 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter14 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter15 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter16 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter17 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter18 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter19 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter20 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter21 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter22 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter23 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter24 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter25 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter26 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter27 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter28 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter29 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter30 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter31 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
-        self.quarter32 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
+        self.blocks = nn.ModuleList(
+            QuarterBlock(d_model=d_model, num_heads=num_heads, max_seq_len=max_seq_len)
+            for _ in range(num_blocks)
+        )
 
-        self._blocks = [
-            self.quarter1,
-            self.quarter2,
-            self.quarter3,
-            self.quarter4,
-            self.quarter5,
-            self.quarter6,
-            self.quarter7,
-            self.quarter8,
-            self.quarter9,
-            self.quarter10,
-            self.quarter11,
-            self.quarter12,
-            self.quarter13,
-            self.quarter14,
-            self.quarter15,
-            self.quarter16,
-            self.quarter17,
-            self.quarter18,
-            self.quarter19,
-            self.quarter20,
-            self.quarter21,
-            self.quarter22,
-            self.quarter23,
-            self.quarter24,
-            self.quarter25,
-            self.quarter26,
-            self.quarter27,
-            self.quarter28,
-            self.quarter29,
-            self.quarter30,
-            self.quarter31,
-            self.quarter32,
-        ]
-
-        self.cls_tokens = nn.Parameter(torch.zeros(1, 96, d_model))
+        self.cls_tokens = nn.Parameter(torch.zeros(1, target_len, d_model))
         nn.init.normal_(self.cls_tokens, std=0.02)
-        self.head = nn.Linear(d_model, 5, bias=False)
+        self.head = nn.Linear(d_model, target_features, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding(x)
         cls = self.cls_tokens.expand(x.size(0), -1, -1)
         x = torch.cat([x, cls], dim=1)
-        for block in self._blocks:
+        for block in self.blocks:
             x = checkpoint(block, x, use_reentrant=False)
-        x = x[:, -96:, :]
+        x = x[:, -self.target_len :, :]
         return self.head(x)

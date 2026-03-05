@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import h5py
 import numpy as np
 import pandas as pd
@@ -10,8 +12,6 @@ from config import (
     CLIP_BOUND,
     EPSILON,
     FEATURES,
-    HDF5_COMPRESSION,
-    HDF5_COMPRESSION_OPTS,
     NUM_FEATURES,
     NUM_TARGET_FEATURES,
     SEQ_LEN,
@@ -107,7 +107,7 @@ def create_hdf5(
     target_len: int = TARGET_LEN,
     stride: int = STRIDE,
 ) -> None:
-    T, F = features.shape
+    T = features.shape[0]
 
     mean = features.mean(axis=0)
     std = features.std(axis=0)
@@ -121,31 +121,9 @@ def create_hdf5(
             f"seq_len({seq_len}) + target_len({target_len})"
         )
 
-    TF = targets.shape[1]
-
     with h5py.File(path, "w") as f:
-        ds_input = f.create_dataset(
-            "input",
-            shape=(n_samples, seq_len, F),
-            dtype=np.float32,
-            chunks=(1, seq_len, F),
-            compression=HDF5_COMPRESSION,
-            compression_opts=HDF5_COMPRESSION_OPTS,
-        )
-        ds_target = f.create_dataset(
-            "target",
-            shape=(n_samples, target_len, TF),
-            dtype=np.float32,
-            chunks=(1, target_len, TF),
-            compression=HDF5_COMPRESSION,
-            compression_opts=HDF5_COMPRESSION_OPTS,
-        )
-
-        for i in range(n_samples):
-            start = i * stride
-            ds_input[i] = features[start : start + seq_len]
-            t_start = start + seq_len
-            ds_target[i] = targets[t_start : t_start + target_len]
+        f.create_dataset("features", data=features, dtype=np.float32)
+        f.create_dataset("targets", data=targets, dtype=np.float32)
 
         f.attrs["features"] = FEATURES
         f.attrs["target_features"] = TARGET_FEATURES
@@ -198,11 +176,22 @@ def build_dataset_pipeline(start_date: str, end_date: str, out_path: str) -> Non
     print("데이터셋 빌드 완료.")
 
 
+def is_legacy_hdf5(path: str) -> bool:
+    p = Path(path)
+    if not p.exists():
+        return False
+    with h5py.File(str(p), "r") as f:
+        return "features" not in f
+
+
 class QuarterDataset(Dataset):
     def __init__(self, h5_path: str):
         self.h5_path = h5_path
         with h5py.File(h5_path, "r") as f:
             self.n_samples = int(f.attrs["n_samples"])
+            self.seq_len = int(f.attrs["seq_len"])
+            self.target_len = int(f.attrs["target_len"])
+            self.stride = int(f.attrs["stride"])
         self._h5 = None
 
     def _open(self):
@@ -214,8 +203,10 @@ class QuarterDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         self._open()
-        x = torch.from_numpy(self._h5["input"][idx].copy())
-        y = torch.from_numpy(self._h5["target"][idx].copy())
+        start = idx * self.stride
+        x = torch.from_numpy(self._h5["features"][start : start + self.seq_len].copy())
+        t_start = start + self.seq_len
+        y = torch.from_numpy(self._h5["targets"][t_start : t_start + self.target_len].copy())
         return x, y
 
     def close(self):
@@ -225,8 +216,6 @@ class QuarterDataset(Dataset):
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-
     from config import (
         BINANCE_SYMBOL,
         DATASET_DIR,
@@ -241,6 +230,11 @@ if __name__ == "__main__":
 
     train_path = out_dir / f"{BINANCE_SYMBOL}_{TRAIN_DATASET_START}_{TRAIN_DATASET_END}.h5"
     eval_path = out_dir / f"{BINANCE_SYMBOL}_{EVAL_DATASET_START}_{EVAL_DATASET_END}.h5"
+
+    for p in [train_path, eval_path]:
+        if is_legacy_hdf5(str(p)):
+            print(f"  구 스키마 감지 → 삭제: {p}")
+            p.unlink()
 
     if not train_path.exists():
         print(f"Building train dataset: {train_path}")

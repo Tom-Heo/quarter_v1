@@ -160,7 +160,6 @@ class EmbeddingBlock(nn.Module):
         self.down_proj = nn.Linear(self.d_hidden, self.d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
         x = self.up_proj(x)
 
         gate1, gate2, feature = x.chunk(3, dim=2)
