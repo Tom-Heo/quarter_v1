@@ -30,7 +30,11 @@ from core.heo import Heo
 from core.net import QuarterNet
 from data.dataset import QuarterDataset, build_dataset_pipeline
 
-plt.rcParams["font.family"] = "NanumGothic"
+_korean_fonts = ["NanumGothic", "Malgun Gothic", "AppleGothic", "DejaVu Sans"]
+for _f in _korean_fonts:
+    if any(_f.lower() in f.name.lower() for f in matplotlib.font_manager.fontManager.ttflist):
+        plt.rcParams["font.family"] = _f
+        break
 plt.rcParams["axes.unicode_minus"] = False
 
 # ── 학습 상수 ────────────────────────────────────────────────────────

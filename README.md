@@ -206,6 +206,17 @@ python train.py --restart
 
 ## 의존성
 
+### 시스템 패키지
+
+```bash
+apt-get update && apt-get install -y fonts-nanum
+rm -rf $(python -c "import matplotlib; print(matplotlib.get_cachedir())")
+```
+
+시각화에 한글 폰트(NanumGothic)를 사용한다. 설치 후 matplotlib 폰트 캐시를 삭제해야 인식된다.
+
+### Python 패키지
+
 ```
 requests>=2.32
 pandas>=2.2
