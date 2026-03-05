@@ -10,7 +10,7 @@ class FFNBlock(nn.Module):
     Output: (B, S, D)
     """
 
-    def __init__(self, d_model: int = 4096):
+    def __init__(self, d_model: int = 2048):
         super().__init__()
         self.d_model = d_model
         self.d_hidden = d_model * 2
@@ -77,7 +77,7 @@ class AttentionBlock(nn.Module):
     """
 
     def __init__(
-        self, d_model: int = 4096, num_heads: int = 32, max_seq_len: int = 9600
+        self, d_model: int = 2048, num_heads: int = 32, max_seq_len: int = 9600
     ):
         super().__init__()
         if d_model % num_heads != 0:
@@ -128,7 +128,7 @@ class QuarterBlock(nn.Module):
     """
 
     def __init__(
-        self, d_model: int = 4096, num_heads: int = 32, max_seq_len: int = 9600
+        self, d_model: int = 2048, num_heads: int = 32, max_seq_len: int = 9600
     ):
         super().__init__()
         self.attn = AttentionBlock(d_model, num_heads, max_seq_len)
@@ -146,7 +146,7 @@ class EmbeddingBlock(nn.Module):
     Output: (B, S, D)
     """
 
-    def __init__(self, features: int = 9, d_model: int = 4096):
+    def __init__(self, features: int = 9, d_model: int = 2048):
         super().__init__()
 
         self.features = features

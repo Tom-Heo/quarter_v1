@@ -13,7 +13,7 @@ class QuarterNet(nn.Module):
     Output: (B, S, 5)
     """
 
-    def __init__(self, features: int = 7, d_model: int = 4096):
+    def __init__(self, features: int = 7, d_model: int = 2048):
         super().__init__()
         self.embedding = EmbeddingBlock(features, d_model)
         self.quarter1 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
@@ -50,14 +50,38 @@ class QuarterNet(nn.Module):
         self.quarter32 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
 
         self._blocks = [
-            self.quarter1, self.quarter2, self.quarter3, self.quarter4,
-            self.quarter5, self.quarter6, self.quarter7, self.quarter8,
-            self.quarter9, self.quarter10, self.quarter11, self.quarter12,
-            self.quarter13, self.quarter14, self.quarter15, self.quarter16,
-            self.quarter17, self.quarter18, self.quarter19, self.quarter20,
-            self.quarter21, self.quarter22, self.quarter23, self.quarter24,
-            self.quarter25, self.quarter26, self.quarter27, self.quarter28,
-            self.quarter29, self.quarter30, self.quarter31, self.quarter32,
+            self.quarter1,
+            self.quarter2,
+            self.quarter3,
+            self.quarter4,
+            self.quarter5,
+            self.quarter6,
+            self.quarter7,
+            self.quarter8,
+            self.quarter9,
+            self.quarter10,
+            self.quarter11,
+            self.quarter12,
+            self.quarter13,
+            self.quarter14,
+            self.quarter15,
+            self.quarter16,
+            self.quarter17,
+            self.quarter18,
+            self.quarter19,
+            self.quarter20,
+            self.quarter21,
+            self.quarter22,
+            self.quarter23,
+            self.quarter24,
+            self.quarter25,
+            self.quarter26,
+            self.quarter27,
+            self.quarter28,
+            self.quarter29,
+            self.quarter30,
+            self.quarter31,
+            self.quarter32,
         ]
 
         self.cls_tokens = nn.Parameter(torch.zeros(1, 96, d_model))
