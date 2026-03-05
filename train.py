@@ -40,7 +40,7 @@ LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
-EVAL_INTERVAL = 1024
+EVAL_INTERVAL = 256
 LOG_INTERVAL = 64
 OUTPUT_DIR = "outputs"
 
@@ -132,7 +132,6 @@ def _log_eval(
     eval_loss: float,
     best_eval_loss: float,
     is_best: bool,
-    vis_path: Path,
 ):
     mark = " ★ 갱신" if is_best else ""
     header = f"── 평가 (스텝 {global_step:,}) "
@@ -143,7 +142,6 @@ def _log_eval(
     _log(f"  last.pt     │ 저장 완료")
     if is_best:
         _log("  best.pt     │ 저장 완료")
-    _log(f"  시각화      │ {vis_path}")
     _log("─" * 54)
 
 
@@ -203,21 +201,20 @@ def _save_checkpoint(
 
 def _evaluate(
     model: nn.Module,
-    eval_loader: DataLoader,
+    eval_dataset: QuarterDataset,
     criterion: nn.Module,
     device: torch.device,
+    n_samples: int = 10,
 ) -> float:
     model.eval()
-    total_loss = 0.0
-    count = 0
+    indices = torch.randint(0, len(eval_dataset), (n_samples,))
+    pairs = [eval_dataset[i] for i in indices]
+    x = torch.stack([p[0] for p in pairs]).to(device)
+    y = torch.stack([p[1] for p in pairs]).to(device)
     with torch.no_grad():
-        for x, y in eval_loader:
-            x, y = x.to(device), y.to(device)
-            pred = model(x)
-            loss = criterion(pred, y)
-            total_loss += loss.item() * x.size(0)
-            count += x.size(0)
-    return total_loss / max(count, 1)
+        pred = model(x)
+        loss = criterion(pred, y)
+    return loss.item()
 
 
 # ── 캔들차트 시각화 ──────────────────────────────────────────────────
@@ -282,7 +279,8 @@ def _visualize(
     output_dir: Path,
 ) -> Path:
     """EMA 적용 상태에서 호출."""
-    x, y_true = eval_dataset[0]
+    idx = torch.randint(0, len(eval_dataset), (1,)).item()
+    x, y_true = eval_dataset[idx]
     with torch.no_grad():
         y_pred = model(x.unsqueeze(0).to(device))
 
@@ -337,13 +335,6 @@ def main() -> None:
         num_workers=0,
         drop_last=False,
     )
-    eval_loader = DataLoader(
-        eval_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=0,
-    )
-
     # ── 모델 ──────────────────────────────────────────────────────────
     model = QuarterNet().to(device)
 
@@ -430,7 +421,7 @@ def main() -> None:
                 scheduler.step()
                 global_step += 1
 
-                # ── 학습 로그 ─────────────────────────────────────────
+                # ── 학습 로그 · 시각화 ────────────────────────────────
                 if global_step % LOG_INTERVAL == 0:
                     elapsed = time.time() - interval_start
                     speed = LOG_INTERVAL / max(elapsed, 1e-6)
@@ -443,17 +434,21 @@ def main() -> None:
                         f"LR {lr:.2e} │ "
                         f"{speed:.2f} step/s"
                     )
+
+                    ema.apply_shadow()
+                    model.eval()
+                    _visualize(model, eval_dataset, device, global_step, output_dir)
+                    ema.restore()
+                    model.train()
+
                     interval_start = time.time()
 
-                # ── 평가 · 체크포인트 · 시각화 ────────────────────────
+                # ── 평가 · 체크포인트 ─────────────────────────────────
                 if global_step % EVAL_INTERVAL == 0:
                     ema.apply_shadow()
                     model.eval()
 
-                    eval_loss = _evaluate(model, eval_loader, criterion, device)
-                    vis_path = _visualize(
-                        model, eval_dataset, device, global_step, output_dir
-                    )
+                    eval_loss = _evaluate(model, eval_dataset, criterion, device)
 
                     ema.restore()
 
@@ -488,7 +483,6 @@ def main() -> None:
                         eval_loss,
                         best_eval_loss,
                         is_best,
-                        vis_path,
                     )
 
                     model.train()
