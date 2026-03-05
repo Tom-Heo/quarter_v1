@@ -254,33 +254,64 @@ def _reconstruct_ohlc(log_returns: np.ndarray, base: float = 100.0) -> pd.DataFr
     )
 
 
-def _draw_candles(ax: plt.Axes, df: pd.DataFrame, title: str):
+def _draw_candles(ax: plt.Axes, df: pd.DataFrame, label: str, tag_color: str):
     n = len(df)
+    up_c, dn_c = "#22ab94", "#f23645"
+    body_w = 0.6
+
     for i in range(n):
         o, h, l, c = df.iloc[i][["Open", "High", "Low", "Close"]]
-        color = "#26a69a" if c >= o else "#ef5350"
-        ax.plot([i, i], [l, h], color=color, linewidth=0.7)
+        color = up_c if c >= o else dn_c
+        ax.plot([i, i], [l, h], color=color, linewidth=0.8, solid_capstyle="round")
         body_lo = min(o, c)
         body_h = abs(c - o) or (h - l) * 0.005 or 0.01
         ax.add_patch(
             plt.Rectangle(
-                (i - 0.35, body_lo),
-                0.7,
+                (i - body_w / 2, body_lo),
+                body_w,
                 body_h,
                 facecolor=color,
                 edgecolor=color,
-                linewidth=0.5,
+                linewidth=0.6,
             )
         )
 
-    y_min, y_max = df["Low"].min(), df["High"].max()
-    margin = (y_max - y_min) * 0.03 or 0.1
+    y_lo, y_hi = df["Low"].min(), df["High"].max()
+    margin = (y_hi - y_lo) * 0.06 or 0.1
     ax.set_xlim(-1, n)
-    ax.set_ylim(y_min - margin, y_max + margin)
-    ax.set_title(title, fontsize=13, fontweight="bold", pad=10)
-    ax.grid(True, alpha=0.25, linewidth=0.5)
-    ax.set_xlabel("캔들", fontsize=10)
-    ax.set_ylabel("가격", fontsize=10)
+    ax.set_ylim(y_lo - margin, y_hi + margin)
+
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    for sp in ("left", "bottom"):
+        ax.spines[sp].set_color("#cccccc")
+
+    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="#e0e0e0", alpha=0.7)
+    ax.xaxis.grid(False)
+    ax.set_axisbelow(True)
+
+    ax.tick_params(axis="both", which="both", labelsize=8, colors="#888888")
+    ax.tick_params(axis="x", labelbottom=False, length=0)
+    ax.set_ylabel("가격", fontsize=9, color="#888888", labelpad=8)
+
+    ax.text(
+        0.02,
+        0.96,
+        label,
+        transform=ax.transAxes,
+        fontsize=12,
+        fontweight="bold",
+        color=tag_color,
+        va="top",
+        ha="left",
+        bbox=dict(
+            boxstyle="round,pad=0.4",
+            facecolor="white",
+            edgecolor=tag_color,
+            alpha=0.85,
+            linewidth=1.2,
+        ),
+    )
 
 
 def _visualize(
@@ -299,20 +330,35 @@ def _visualize(
     gt_df = _reconstruct_ohlc(y_true.numpy())
     pred_df = _reconstruct_ohlc(y_pred.squeeze(0).cpu().numpy())
 
-    fig, (ax_gt, ax_pred) = plt.subplots(1, 2, figsize=(22, 8), facecolor="white")
-    fig.suptitle(
-        f"스텝 {global_step:,} — 캔들차트 비교",
-        fontsize=15,
-        fontweight="bold",
-        y=0.98,
+    fig = plt.figure(figsize=(22, 8.5), facecolor="#ffffff")
+    gs = fig.add_gridspec(
+        1, 2, wspace=0.15, left=0.05, right=0.97, top=0.90, bottom=0.08,
     )
-    _draw_candles(ax_gt, gt_df, "정답 (Ground Truth)")
-    _draw_candles(ax_pred, pred_df, "예측 (Prediction)")
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    ax_pred = fig.add_subplot(gs[0, 0])
+    ax_gt = fig.add_subplot(gs[0, 1])
+
+    for ax in (ax_pred, ax_gt):
+        ax.set_facecolor("#fafafa")
+
+    _draw_candles(ax_pred, pred_df, "Prediction", "#1565c0")
+    _draw_candles(ax_gt, gt_df, "Ground Truth", "#555555")
+
+    fig.suptitle(
+        f"Step {global_step:,}",
+        fontsize=11,
+        color="#999999",
+        y=0.96,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     save_path = output_dir / f"step_{global_step:06d}.png"
-    fig.savefig(str(save_path), dpi=150, bbox_inches="tight", facecolor="white")
+    fig.savefig(
+        str(save_path),
+        dpi=150,
+        bbox_inches="tight",
+        facecolor="#ffffff",
+        pad_inches=0.3,
+    )
     plt.close(fig)
     return save_path
 

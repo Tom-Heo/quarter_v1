@@ -200,7 +200,7 @@ python train.py --restart
 - **EMA**: 매 스텝 exponential moving average 갱신. 평가와 시각화는 EMA 파라미터로 수행
 - **스케줄러**: 첫 1 에폭 동안 lr을 1e-7 배율에서 1.0 배율로 선형 증가 후, 매 스텝 γ=0.999998로 지수 감소
 - **체크포인트**: 1,024 스텝마다 `checkpoints/last.pt` 저장. eval loss 갱신 시 `checkpoints/best.pt` 추가 저장
-- **시각화**: 평가 시마다 정답과 예측을 OHLC 캔들차트로 복원하여 `outputs/step_XXXXXX.png`에 저장
+- **시각화**: 로그 주기마다 예측(좌)과 정답(우)을 OHLC 캔들차트로 복원하여 `outputs/step_XXXXXX.png`에 저장. 패널 내부 라벨 배지(Prediction / Ground Truth)로 구분
 
 ---
 
