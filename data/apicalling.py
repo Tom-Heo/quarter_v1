@@ -19,6 +19,19 @@ from config import (
 class BinanceFetcher:
     FAPI = "https://fapi.binance.com"
     DATA = f"{FAPI}/futures/data"
+    _MAX_RETRIES = 5
+
+    def _request_with_retry(self, url: str, params: dict) -> list:
+        for attempt in range(self._MAX_RETRIES):
+            resp = requests.get(url, params=params)
+            if resp.status_code in (418, 429):
+                wait = int(resp.headers.get("Retry-After", 2**attempt * 5))
+                print(f"\n  [rate-limit {resp.status_code}] {wait}s 대기 후 재시도 ({attempt + 1}/{self._MAX_RETRIES})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
 
     def fetch_klines(
         self,
@@ -38,9 +51,7 @@ class BinanceFetcher:
             "endTime": end_ms,
         }
         while True:
-            resp = requests.get(f"{self.FAPI}/fapi/v1/klines", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._request_with_retry(f"{self.FAPI}/fapi/v1/klines", params)
             if not data:
                 break
             rows.extend(data)
@@ -82,9 +93,7 @@ class BinanceFetcher:
             "endTime": end_ms,
         }
         while True:
-            resp = requests.get(f"{self.FAPI}/fapi/v1/fundingRate", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._request_with_retry(f"{self.FAPI}/fapi/v1/fundingRate", params)
             if not data:
                 break
             rows.extend(data)
@@ -131,9 +140,7 @@ class BinanceFetcher:
             params.update(extra_params)
 
         while True:
-            resp = requests.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._request_with_retry(url, params)
             if not data:
                 break
             rows.extend(data)
