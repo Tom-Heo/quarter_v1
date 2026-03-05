@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
+
 from .block import EmbeddingBlock, QuarterBlock
 
 
@@ -47,6 +49,17 @@ class QuarterNet(nn.Module):
         self.quarter31 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
         self.quarter32 = QuarterBlock(d_model=d_model, num_heads=32, max_seq_len=9696)
 
+        self._blocks = [
+            self.quarter1, self.quarter2, self.quarter3, self.quarter4,
+            self.quarter5, self.quarter6, self.quarter7, self.quarter8,
+            self.quarter9, self.quarter10, self.quarter11, self.quarter12,
+            self.quarter13, self.quarter14, self.quarter15, self.quarter16,
+            self.quarter17, self.quarter18, self.quarter19, self.quarter20,
+            self.quarter21, self.quarter22, self.quarter23, self.quarter24,
+            self.quarter25, self.quarter26, self.quarter27, self.quarter28,
+            self.quarter29, self.quarter30, self.quarter31, self.quarter32,
+        ]
+
         self.cls_tokens = nn.Parameter(torch.zeros(1, 96, d_model))
         nn.init.normal_(self.cls_tokens, std=0.02)
         self.head = nn.Linear(d_model, 5, bias=False)
@@ -55,37 +68,7 @@ class QuarterNet(nn.Module):
         x = self.embedding(x)
         cls = self.cls_tokens.expand(x.size(0), -1, -1)
         x = torch.cat([x, cls], dim=1)
-        x = self.quarter1(x)
-        x = self.quarter2(x)
-        x = self.quarter3(x)
-        x = self.quarter4(x)
-        x = self.quarter5(x)
-        x = self.quarter6(x)
-        x = self.quarter7(x)
-        x = self.quarter8(x)
-        x = self.quarter9(x)
-        x = self.quarter10(x)
-        x = self.quarter11(x)
-        x = self.quarter12(x)
-        x = self.quarter13(x)
-        x = self.quarter14(x)
-        x = self.quarter15(x)
-        x = self.quarter16(x)
-        x = self.quarter17(x)
-        x = self.quarter18(x)
-        x = self.quarter19(x)
-        x = self.quarter20(x)
-        x = self.quarter21(x)
-        x = self.quarter22(x)
-        x = self.quarter23(x)
-        x = self.quarter24(x)
-        x = self.quarter25(x)
-        x = self.quarter26(x)
-        x = self.quarter27(x)
-        x = self.quarter28(x)
-        x = self.quarter29(x)
-        x = self.quarter30(x)
-        x = self.quarter31(x)
-        x = self.quarter32(x)
+        for block in self._blocks:
+            x = checkpoint(block, x, use_reentrant=False)
         x = x[:, -96:, :]
         return self.head(x)

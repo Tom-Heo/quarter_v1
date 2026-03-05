@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -153,7 +154,9 @@ def _ensure_datasets() -> tuple[Path, Path]:
     ds_dir = Path(DATASET_DIR)
     ds_dir.mkdir(parents=True, exist_ok=True)
 
-    train_path = ds_dir / f"{BINANCE_SYMBOL}_{TRAIN_DATASET_START}_{TRAIN_DATASET_END}.h5"
+    train_path = (
+        ds_dir / f"{BINANCE_SYMBOL}_{TRAIN_DATASET_START}_{TRAIN_DATASET_END}.h5"
+    )
     eval_path = ds_dir / f"{BINANCE_SYMBOL}_{EVAL_DATASET_START}_{EVAL_DATASET_END}.h5"
 
     if not train_path.exists():
@@ -311,7 +314,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="QuarterNet 학습")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--restart", action="store_true", help="처음부터 새로 학습")
-    group.add_argument("--resume", action="store_true", help="체크포인트에서 이어서 학습")
+    group.add_argument(
+        "--resume", action="store_true", help="체크포인트에서 이어서 학습"
+    )
     args = parser.parse_args()
 
     do_resume = not args.restart
@@ -394,8 +399,12 @@ def main() -> None:
     mode_str = "재개 (--resume)" if do_resume else "재시작 (--restart)"
     n_params = sum(p.numel() for p in model.parameters())
     _log_banner(
-        mode_str, device, n_params,
-        len(train_dataset), len(eval_dataset), warmup_steps,
+        mode_str,
+        device,
+        n_params,
+        len(train_dataset),
+        len(eval_dataset),
+        warmup_steps,
     )
 
     # ── 학습 루프 ─────────────────────────────────────────────────────
@@ -453,17 +462,33 @@ def main() -> None:
                         best_eval_loss = eval_loss
 
                     _save_checkpoint(
-                        last_pt, model, optimizer, scheduler, ema,
-                        global_step, epoch, best_eval_loss,
+                        last_pt,
+                        model,
+                        optimizer,
+                        scheduler,
+                        ema,
+                        global_step,
+                        epoch,
+                        best_eval_loss,
                     )
                     if is_best:
                         _save_checkpoint(
-                            ckpt_dir / "best.pt", model, optimizer, scheduler, ema,
-                            global_step, epoch, best_eval_loss,
+                            ckpt_dir / "best.pt",
+                            model,
+                            optimizer,
+                            scheduler,
+                            ema,
+                            global_step,
+                            epoch,
+                            best_eval_loss,
                         )
 
                     _log_eval(
-                        global_step, eval_loss, best_eval_loss, is_best, vis_path,
+                        global_step,
+                        eval_loss,
+                        best_eval_loss,
+                        is_best,
+                        vis_path,
                     )
 
                     model.train()
