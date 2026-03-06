@@ -440,7 +440,7 @@ def main() -> None:
     )
 
     # ── 손실 함수 ─────────────────────────────────────────────────────
-    criterion = Heo.HeoLoss(feature_weights=LOSS_WEIGHTS)
+    criterion = Heo.HeoLoss(feature_weights=LOSS_WEIGHTS).to(device)
 
     # ── 상태 초기화 ───────────────────────────────────────────────────
     global_step = 0
