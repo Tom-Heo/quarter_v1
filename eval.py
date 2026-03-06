@@ -71,14 +71,9 @@ def _resolve_checkpoint_path(checkpoint_path: Path) -> tuple[Path, str | None]:
     if checkpoint_path.exists():
         return checkpoint_path, None
 
-    if checkpoint_path.name == "last_export.pt":
-        fallback_path = checkpoint_path.with_name("best_export.pt")
-        if fallback_path.exists():
-            return fallback_path, "last_export.pt 없음 -> best_export.pt 사용"
-
     raise FileNotFoundError(
         f"체크포인트를 찾을 수 없습니다: {checkpoint_path}\n"
-        "먼저 train.py를 실행해 export 체크포인트를 생성하거나 "
+        "먼저 train.py를 실행해 last_export.pt를 생성하거나 "
         "--checkpoint 경로를 확인해 주세요."
     )
 
@@ -131,7 +126,7 @@ def _load_model(
     if {"model", "optimizer", "scheduler", "ema"}.issubset(state_dict.keys()):
         raise ValueError(
             "학습용 전체 체크포인트를 지정했습니다. "
-            "eval.py에는 last_export.pt 또는 best_export.pt를 사용해 주세요."
+            "eval.py에는 last_export.pt를 사용해 주세요."
         )
 
     model = QuarterNet().to(device)
@@ -284,7 +279,7 @@ def main() -> None:
         "--checkpoint",
         type=Path,
         default=Path(CHECKPOINT_DIR) / "last_export.pt",
-        help="EMA 방향 분류 추론용 가중치 파일 경로 (기본: last_export.pt, 없으면 best_export.pt 사용)",
+        help="EMA 방향 분류 추론용 가중치 파일 경로 (기본: last_export.pt)",
     )
     parser.add_argument(
         "--samples",

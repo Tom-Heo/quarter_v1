@@ -70,7 +70,7 @@ pip install -r requirements.txt
 python train.py --restart
 
 # 3) 평가
-python eval.py --checkpoint checkpoints/best_export.pt --samples 1000 --batch-size 8
+python eval.py --checkpoint checkpoints/last_export.pt --samples 1000 --batch-size 8
 ```
 
 
@@ -87,7 +87,7 @@ python train.py --restart
 
 - `python train.py`는 기본적으로 `resume` 동작을 시도합니다.
 - 데이터셋 HDF5가 없으면 `train.py`와 `eval.py`가 자동으로 생성합니다.
-- `eval.py`는 `last.pt`나 `best.pt` 같은 전체 학습 체크포인트가 아니라 `last_export.pt`, `best_export.pt` 같은 export 가중치만 지원합니다.
+- `eval.py`는 `last.pt` 같은 전체 학습 체크포인트가 아니라 `last_export.pt` 같은 export 가중치만 지원합니다.
 
 데이터셋만 미리 만들어 두고 싶다면 아래 명령을 사용할 수 있습니다.
 
@@ -381,7 +381,7 @@ python train.py --restart
 python eval.py
 
 # 옵션 지정 평가
-python eval.py --checkpoint checkpoints/best_export.pt --samples 5000 --batch-size 8 --seed 42 --device cuda:0
+python eval.py --checkpoint checkpoints/last_export.pt --samples 5000 --batch-size 8 --seed 42 --device cuda:0
 ```
 
 ### CLI 옵션
@@ -397,7 +397,6 @@ python eval.py --checkpoint checkpoints/best_export.pt --samples 5000 --batch-si
 ### 평가 동작
 
 - 평가용 HDF5가 없으면 자동으로 생성합니다.
-- `last_export.pt`가 없고 `best_export.pt`가 있으면 자동으로 fallback합니다.
 - 정답 라벨은 `sum(lnCO_0..95) > 0`으로 계산합니다.
 - 예측은 `logit > 0`으로 판정합니다.
 - 주 지표는 accuracy입니다.
@@ -407,21 +406,17 @@ python eval.py --checkpoint checkpoints/best_export.pt --samples 5000 --batch-si
 `eval.py`는 전체 학습 체크포인트를 받지 않습니다. 즉, 아래는 실패합니다.
 
 - `checkpoints/last.pt`
-- `checkpoints/best.pt`
 
 아래만 지원합니다.
 
 - `checkpoints/last_export.pt`
-- `checkpoints/best_export.pt`
 
 ## 체크포인트, 로그, 산출물
 
 | 경로 | 내용 | 용도 |
 |---|---|---|
 | `checkpoints/last.pt` | 전체 학습 상태 | resume 용 |
-| `checkpoints/best.pt` | 최고 accuracy 시점의 전체 학습 상태 | resume / 보관 용 |
 | `checkpoints/last_export.pt` | EMA가 적용된 모델 가중치만 저장 | 평가 / 추론 용 |
-| `checkpoints/best_export.pt` | 최고 accuracy 기준 EMA export 가중치 | 평가 / 추론 용 |
 | `logs/train_*.log` | 학습 로그 | 진행 추적 |
 | `logs/eval_*.log` | 평가 로그 | 평가 기록 |
 | `outputs/step_*.png` | 분류 시각화 이미지 | 학습 중 모니터링 |
@@ -429,8 +424,8 @@ python eval.py --checkpoint checkpoints/best_export.pt --samples 5000 --batch-si
 
 추가 설명:
 
-- `last.pt`와 `best.pt`는 모델만이 아니라 optimizer, scheduler, EMA shadow, epoch, step, best accuracy까지 포함합니다.
-- `last_export.pt`와 `best_export.pt`는 EMA 적용 상태에서 저장한 순수 `state_dict`입니다.
+- `last.pt`는 모델만이 아니라 optimizer, scheduler, EMA shadow, epoch, step까지 포함합니다.
+- `last_export.pt`는 EMA 적용 상태에서 저장한 순수 `state_dict`입니다.
 
 ## 주요 설정값 안내
 
@@ -512,7 +507,7 @@ quarter_v1/
 현재 데이터셋은 미래 캔들 정보를 더 풍부하게 저장하지만, 실제 학습/평가 라벨은 `lnCO` 누적 부호 하나만 사용합니다. 즉 저장 포맷과 현재 모델 계약이 분리되어 있습니다.
 
 **Q. 왜 `eval.py`에 `last.pt`를 넣으면 실패하나요?**  
-`eval.py`는 전체 학습 상태가 아니라 export된 순수 가중치만 받도록 설계되어 있습니다. `last_export.pt` 또는 `best_export.pt`를 사용해야 합니다.
+`eval.py`는 전체 학습 상태가 아니라 export된 순수 가중치만 받도록 설계되어 있습니다. `last_export.pt`를 사용해야 합니다.
 
 **Q. 기존 회귀형 체크포인트를 그대로 이어서 쓸 수 있나요?**  
 보장되지 않습니다. 현재 모델은 single-CLS, single-logit 구조이므로 이전 회귀형 체크포인트와 shape가 다를 수 있습니다.

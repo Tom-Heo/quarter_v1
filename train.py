@@ -47,8 +47,8 @@ LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
-EVAL_INTERVAL = 256
-EVAL_SAMPLES = 256
+EVAL_INTERVAL = 200
+EVAL_SAMPLES = 10
 LOG_INTERVAL = 10
 OUTPUT_DIR = "outputs"
 CKPT_TASK = "direction_binary_cls1"
@@ -167,21 +167,14 @@ def _log_eval(
     global_step: int,
     eval_loss: float,
     eval_accuracy: float,
-    best_eval_accuracy: float,
-    is_best: bool,
 ):
-    mark = " ★ 갱신" if is_best else ""
     header = f"── 평가 (스텝 {global_step:,}) "
     header += "─" * max(0, 54 - len(header))
     _log(header)
     _log(f"  Eval BCE    │ {eval_loss:.6f}")
     _log(f"  Eval Acc    │ {eval_accuracy:.2f}%")
-    _log(f"  Best Acc    │ {best_eval_accuracy:.2f}%{mark}")
     _log(f"  last.pt     │ 저장 완료")
     _log("  last_export.pt │ 저장 완료")
-    if is_best:
-        _log("  best.pt     │ 저장 완료")
-        _log("  best_export.pt │ 저장 완료")
     _log("─" * 54)
 
 
@@ -224,7 +217,6 @@ def _save_checkpoint(
     ema: EMA,
     global_step: int,
     epoch: int,
-    best_eval_accuracy: float,
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -236,7 +228,6 @@ def _save_checkpoint(
             "ema": ema.state_dict(),
             "global_step": global_step,
             "epoch": epoch,
-            "best_eval_accuracy": best_eval_accuracy,
         },
         path,
     )
@@ -312,20 +303,22 @@ def _load_resume_state(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     ema: EMA,
     device: torch.device,
-) -> tuple[bool, int, int, float]:
+) -> tuple[bool, int, int]:
     ckpt = torch.load(path, map_location=device, weights_only=False)
     if ckpt.get("task") != CKPT_TASK:
         _log(
             "체크포인트 구조 불일치 │ 기존 회귀 체크포인트이거나 다른 태스크입니다. "
             "현재 설정으로 새 학습을 시작합니다."
         )
-        return False, 0, 0, float("-inf")
+        return False, 0, 0
 
     try:
         model.load_state_dict(ckpt["model"])
     except RuntimeError as exc:
-        _log(f"체크포인트 로드 실패 │ 현재 모델 구조와 호환되지 않아 재시작합니다. ({exc})")
-        return False, 0, 0, float("-inf")
+        _log(
+            f"체크포인트 로드 실패 │ 현재 모델 구조와 호환되지 않아 재시작합니다. ({exc})"
+        )
+        return False, 0, 0
 
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
@@ -333,8 +326,7 @@ def _load_resume_state(
 
     global_step = int(ckpt["global_step"])
     start_epoch = int(ckpt["epoch"])
-    best_eval_accuracy = float(ckpt.get("best_eval_accuracy", float("-inf")))
-    return True, global_step, start_epoch, best_eval_accuracy
+    return True, global_step, start_epoch
 
 
 # ── 평가 ─────────────────────────────────────────────────────────────
@@ -545,7 +537,6 @@ def main() -> None:
     # ── 상태 초기화 ───────────────────────────────────────────────────
     global_step = 0
     start_epoch = 0
-    best_eval_accuracy = float("-inf")
     resumed = False
 
     # ── 체크포인트 로드 ───────────────────────────────────────────────
@@ -555,7 +546,7 @@ def main() -> None:
 
     if do_resume and last_pt.exists():
         _log("체크포인트 로드 중...")
-        resumed, global_step, start_epoch, best_eval_accuracy = _load_resume_state(
+        resumed, global_step, start_epoch = _load_resume_state(
             last_pt,
             model,
             optimizer,
@@ -564,10 +555,7 @@ def main() -> None:
             device,
         )
         if resumed:
-            _log(
-                f"체크포인트 로드 완료 │ 에폭 {start_epoch} │ "
-                f"스텝 {global_step:,} │ Best Acc {best_eval_accuracy:.2f}%"
-            )
+            _log(f"체크포인트 로드 완료 │ 에폭 {start_epoch} │ 스텝 {global_step:,}")
     elif do_resume:
         _log("체크포인트 없음 │ 처음부터 학습을 시작합니다")
     else:
@@ -683,11 +671,6 @@ def main() -> None:
                     )
                     _save_export(ckpt_dir / "last_export.pt", model)
 
-                    is_best = eval_accuracy > best_eval_accuracy
-                    if is_best:
-                        best_eval_accuracy = eval_accuracy
-                        _save_export(ckpt_dir / "best_export.pt", model)
-
                     ema.restore()
 
                     _save_checkpoint(
@@ -698,26 +681,12 @@ def main() -> None:
                         ema,
                         global_step,
                         epoch,
-                        best_eval_accuracy,
                     )
-                    if is_best:
-                        _save_checkpoint(
-                            ckpt_dir / "best.pt",
-                            model,
-                            optimizer,
-                            scheduler,
-                            ema,
-                            global_step,
-                            epoch,
-                            best_eval_accuracy,
-                        )
 
                     _log_eval(
                         global_step,
                         eval_loss,
                         eval_accuracy,
-                        best_eval_accuracy,
-                        is_best,
                     )
 
                     model.train()
