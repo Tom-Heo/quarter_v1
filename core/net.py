@@ -10,6 +10,35 @@ from .block import EmbeddingBlock, QuarterBlock, FFNBlock
 
 _NUM_BLOCKS = 64
 _MAX_SEQ_LEN = SEQ_LEN + NUM_CLS_TOKENS
+DEBUG_NUMERICS = True
+
+
+def _tensor_finite_summary(name: str, tensor: torch.Tensor) -> str:
+    t = tensor.detach()
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+    nan_count = int(torch.isnan(t).sum().item())
+    inf_count = int(torch.isinf(t).sum().item())
+    summary = (
+        f"{name} | shape={tuple(t.shape)} | dtype={t.dtype} | "
+        f"finite {finite_count}/{total_count} | nan {nan_count} | inf {inf_count}"
+    )
+    if finite_count > 0:
+        finite_values = t[finite_mask]
+        summary += (
+            f" | min {finite_values.min().item():.6e}"
+            f" | max {finite_values.max().item():.6e}"
+        )
+    return summary
+
+
+def _ensure_finite(name: str, tensor: torch.Tensor) -> None:
+    if not DEBUG_NUMERICS:
+        return
+    if torch.isfinite(tensor).all().item():
+        return
+    raise RuntimeError(_tensor_finite_summary(name, tensor))
 
 
 class QuarterNet(nn.Module):
@@ -49,13 +78,44 @@ class QuarterNet(nn.Module):
         self.head2 = nn.Linear(d_model, direction_outputs, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.embedding1(x)
-        x = self.embedding2(x)
+        _ensure_finite("QuarterNet.input", x)
+
+        try:
+            x = self.embedding1(x)
+        except RuntimeError as exc:
+            raise RuntimeError(f"QuarterNet.embedding1 failed: {exc}") from exc
+        _ensure_finite("QuarterNet.embedding1", x)
+
+        try:
+            x = self.embedding2(x)
+        except RuntimeError as exc:
+            raise RuntimeError(f"QuarterNet.embedding2 failed: {exc}") from exc
+        _ensure_finite("QuarterNet.embedding2", x)
+
         cls = self.cls_tokens.expand(x.size(0), -1, -1)
+        _ensure_finite("QuarterNet.cls_tokens", cls)
         x = torch.cat([x, cls], dim=1)
-        for block in self.blocks:
-            x = checkpoint(block, x, use_reentrant=False)
+        _ensure_finite("QuarterNet.concat", x)
+
+        for idx, block in enumerate(self.blocks):
+            try:
+                x = checkpoint(block, x, use_reentrant=False)
+            except RuntimeError as exc:
+                raise RuntimeError(f"QuarterNet.block[{idx}] failed: {exc}") from exc
+            _ensure_finite(f"QuarterNet.block[{idx}].output", x)
+
         x = x[:, -self.num_cls_tokens :, :]
-        x = self.head1(x)
+        _ensure_finite("QuarterNet.cls_slice", x)
+
+        try:
+            x = self.head1(x)
+        except RuntimeError as exc:
+            raise RuntimeError(f"QuarterNet.head1 failed: {exc}") from exc
+        _ensure_finite("QuarterNet.head1", x)
+
         x = self.head2(x)
-        return x.squeeze(-1).squeeze(-1)
+        _ensure_finite("QuarterNet.head2", x)
+
+        x = x.squeeze(-1).squeeze(-1)
+        _ensure_finite("QuarterNet.logits", x)
+        return x

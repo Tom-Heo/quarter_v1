@@ -3,6 +3,36 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .heo import Heo
 
+DEBUG_NUMERICS = True
+
+
+def _tensor_finite_summary(name: str, tensor: torch.Tensor) -> str:
+    t = tensor.detach()
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+    nan_count = int(torch.isnan(t).sum().item())
+    inf_count = int(torch.isinf(t).sum().item())
+    summary = (
+        f"{name} | shape={tuple(t.shape)} | dtype={t.dtype} | "
+        f"finite {finite_count}/{total_count} | nan {nan_count} | inf {inf_count}"
+    )
+    if finite_count > 0:
+        finite_values = t[finite_mask]
+        summary += (
+            f" | min {finite_values.min().item():.6e}"
+            f" | max {finite_values.max().item():.6e}"
+        )
+    return summary
+
+
+def _ensure_finite(name: str, tensor: torch.Tensor) -> None:
+    if not DEBUG_NUMERICS:
+        return
+    if torch.isfinite(tensor).all().item():
+        return
+    raise RuntimeError(_tensor_finite_summary(name, tensor))
+
 
 class FFNBlock(nn.Module):
     """
@@ -24,15 +54,24 @@ class FFNBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
+        _ensure_finite("FFNBlock.input", x)
         x = self.up_proj(x)
+        _ensure_finite("FFNBlock.up_proj", x)
 
         gate1, gate2, feature = x.chunk(3, dim=2)
         gate1 = self.gate1(gate1)
+        _ensure_finite("FFNBlock.gate1", gate1)
         gate2 = self.gate2(gate2)
+        _ensure_finite("FFNBlock.gate2", gate2)
         feature = self.feature(feature)
+        _ensure_finite("FFNBlock.feature", feature)
         x = gate1 * gate2 * feature
+        _ensure_finite("FFNBlock.product", x)
         x = self.down_proj(x)
-        return self.residual_gate(x, residual)
+        _ensure_finite("FFNBlock.down_proj", x)
+        x = self.residual_gate(x, residual)
+        _ensure_finite("FFNBlock.output", x)
+        return x
 
 
 class RoPE(nn.Module):
@@ -98,26 +137,35 @@ class AttentionBlock(nn.Module):
     def forward(self, x: torch.Tensor, is_causal: bool = True) -> torch.Tensor:
         B, S, D = x.shape
         residual = x
+        _ensure_finite("AttentionBlock.input", x)
 
         qkv = self.qkv_proj(x)
+        _ensure_finite("AttentionBlock.qkv_proj", qkv)
 
         qkv = qkv.view(B, S, 3, self.num_heads, self.head_dim)
 
         q, k, v = qkv.unbind(dim=2)
 
         q_rot, k_rot = self.rope(q, k)
+        _ensure_finite("AttentionBlock.q_rot", q_rot)
+        _ensure_finite("AttentionBlock.k_rot", k_rot)
+        _ensure_finite("AttentionBlock.v", v)
 
         q_rot = q_rot.transpose(1, 2)
         k_rot = k_rot.transpose(1, 2)
         v = v.transpose(1, 2)
 
         attn_out = F.scaled_dot_product_attention(q_rot, k_rot, v, is_causal=is_causal)
+        _ensure_finite("AttentionBlock.attn_out", attn_out)
 
         attn_out = attn_out.transpose(1, 2).contiguous()
         attn_out = attn_out.view(B, S, D)
 
         out = self.o_proj(attn_out)
-        return self.residual_gate(out, residual)
+        _ensure_finite("AttentionBlock.o_proj", out)
+        out = self.residual_gate(out, residual)
+        _ensure_finite("AttentionBlock.output", out)
+        return out
 
 
 class QuarterBlock(nn.Module):
@@ -135,7 +183,9 @@ class QuarterBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, is_causal: bool = True) -> torch.Tensor:
         x = self.attn(x, is_causal=is_causal)
+        _ensure_finite("QuarterBlock.after_attn", x)
         x = self.ffn(x)
+        _ensure_finite("QuarterBlock.after_ffn", x)
         return x
 
 
@@ -159,12 +209,19 @@ class EmbeddingBlock(nn.Module):
         self.down_proj = nn.Linear(self.d_hidden, self.d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _ensure_finite("EmbeddingBlock.input", x)
         x = self.up_proj(x)
+        _ensure_finite("EmbeddingBlock.up_proj", x)
 
         gate1, gate2, feature = x.chunk(3, dim=2)
         gate1 = self.gate1(gate1)
+        _ensure_finite("EmbeddingBlock.gate1", gate1)
         gate2 = self.gate2(gate2)
+        _ensure_finite("EmbeddingBlock.gate2", gate2)
         feature = self.feature(feature)
+        _ensure_finite("EmbeddingBlock.feature", feature)
         x = gate1 * gate2 * feature
+        _ensure_finite("EmbeddingBlock.product", x)
         x = self.down_proj(x)
+        _ensure_finite("EmbeddingBlock.down_proj", x)
         return x
