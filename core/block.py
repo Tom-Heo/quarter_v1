@@ -146,7 +146,7 @@ class EmbeddingBlock(nn.Module):
     Output: (B, S, D)
     """
 
-    def __init__(self, features: int = 9, d_model: int = 2048):
+    def __init__(self, features: int, d_model: int = 2048):
         super().__init__()
 
         self.features = features

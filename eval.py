@@ -21,7 +21,7 @@ from data.dataset import QuarterDataset, build_dataset_pipeline, is_legacy_hdf5
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 LOG_DIR = PROJECT_ROOT / "logs"
-DEFAULT_SAMPLES = 1000
+DEFAULT_SAMPLES = 100
 DEFAULT_BATCH_SIZE = 1
 PROGRESS_LOG_STEPS = 10
 
