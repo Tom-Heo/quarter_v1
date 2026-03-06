@@ -50,7 +50,7 @@ WEIGHT_DECAY = 1e-4
 SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
 EVAL_INTERVAL = 256
-LOG_INTERVAL = 32
+LOG_INTERVAL = 8
 OUTPUT_DIR = "outputs"
 
 
@@ -363,7 +363,13 @@ def _visualize(
 
     fig = plt.figure(figsize=(22, 8.5), facecolor="#ffffff")
     gs = fig.add_gridspec(
-        1, 2, wspace=0.15, left=0.05, right=0.97, top=0.90, bottom=0.08,
+        1,
+        2,
+        wspace=0.15,
+        left=0.05,
+        right=0.97,
+        top=0.90,
+        bottom=0.08,
     )
     ax_pred = fig.add_subplot(gs[0, 0])
     ax_gt = fig.add_subplot(gs[0, 1])
