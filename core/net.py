@@ -52,7 +52,7 @@ class QuarterNet(nn.Module):
         features: int = NUM_FEATURES,
         direction_outputs: int = NUM_DIRECTION_OUTPUTS,
         num_cls_tokens: int = NUM_CLS_TOKENS,
-        d_model: int = 2048,
+        d_model: int = 1024,
         num_heads: int = 16,
         num_blocks: int = _NUM_BLOCKS,
         max_seq_len: int = _MAX_SEQ_LEN,

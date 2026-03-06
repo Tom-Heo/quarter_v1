@@ -267,7 +267,7 @@ Input (B, 9600, 22)
 -> QuarterBlock x64
 -> 마지막 CLS 토큰 추출
 -> FFNBlock
--> Linear(2048 -> 1)
+-> Linear(1024 -> 1)
 -> direction logit (B,)
 ```
 
@@ -277,11 +277,11 @@ Input (B, 9600, 22)
 
 | 항목 | 값 |
 |---|---|
-| `d_model` | `2048` |
+| `d_model` | `1024` |
 | `num_heads` | `16` |
-| `head_dim` | `128` |
+| `head_dim` | `64` |
 | `QuarterBlock` 수 | `64` |
-| FFN hidden dim | `4096` (`d_model * 2`) |
+| FFN hidden dim | `2048` (`d_model * 2`) |
 | CLS 토큰 수 | `1` |
 | 출력 차원 | `1` |
 | RoPE base | `10000.0` |
