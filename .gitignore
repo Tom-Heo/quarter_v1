@@ -16,9 +16,6 @@ env/
 .idea/
 .cursor/
 
-# 데이터셋 (Binance API에서 빌드)
-dataset/*.h5
-
 # 체크포인트
 checkpoints/*.pt
 
