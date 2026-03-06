@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 import pandas as pd
 import requests
@@ -16,22 +17,65 @@ from config import (
     BINANCE_SYMBOL,
 )
 
+LogFn = Callable[[str], None]
+
 
 class BinanceFetcher:
     FAPI = "https://fapi.binance.com"
     DATA = f"{FAPI}/futures/data"
     _MAX_RETRIES = 5
+    _PROGRESS_BUCKET = 5
+
+    def __init__(self, log_fn: LogFn | None = None):
+        self.log_fn = log_fn
+        self._progress_marks: dict[str, int] = {}
+
+    def _emit(self, msg: str) -> None:
+        if self.log_fn is None:
+            print(msg)
+        else:
+            self.log_fn(msg)
+
+    def _emit_progress(self, label: str, pct: float, count: int, done: bool = False):
+        if not label:
+            return
+
+        pct = min(max(pct, 0.0), 100.0)
+        if self.log_fn is None:
+            end = "\n" if done else ""
+            print(f"\r  {label} {pct:5.1f}% ({count:,}건)", end=end, flush=True)
+            return
+
+        bucket = 100 if done else int(pct // self._PROGRESS_BUCKET) * self._PROGRESS_BUCKET
+        last_bucket = self._progress_marks.get(label, -self._PROGRESS_BUCKET)
+        if not done and bucket <= last_bucket:
+            return
+
+        self._progress_marks[label] = bucket
+        self.log_fn(f"[수집] {label:<8} │ {pct:5.1f}% │ {count:,}건")
 
     def _request_with_retry(self, url: str, params: dict) -> list:
         for attempt in range(self._MAX_RETRIES):
             resp = requests.get(url, params=params)
             if resp.status_code in (418, 429):
                 wait = int(resp.headers.get("Retry-After", 2**attempt * 5))
-                print(f"\n  [rate-limit {resp.status_code}] {wait}s 대기 후 재시도 ({attempt + 1}/{self._MAX_RETRIES})")
+                if self.log_fn is None:
+                    print(
+                        f"\n  [rate-limit {resp.status_code}] {wait}s 대기 후 재시도 "
+                        f"({attempt + 1}/{self._MAX_RETRIES})"
+                    )
+                else:
+                    self._emit(
+                        f"[수집] rate-limit {resp.status_code} │ "
+                        f"{wait}s 대기 후 재시도 ({attempt + 1}/{self._MAX_RETRIES})"
+                    )
                 time.sleep(wait)
                 continue
             if resp.status_code == 400:
-                print(f"\n  [400 Bad Request] 해당 구간 데이터 없음 — 건너뜀")
+                if self.log_fn is None:
+                    print("\n  [400 Bad Request] 해당 구간 데이터 없음 — 건너뜀")
+                else:
+                    self._emit("[수집] 400 Bad Request │ 해당 구간 데이터 없음, 건너뜀")
                 return []
             resp.raise_for_status()
             return resp.json()
@@ -47,6 +91,7 @@ class BinanceFetcher:
     ) -> pd.DataFrame:
         rows: list = []
         origin_start = start_ms
+        self._progress_marks.pop(label, None)
         params = {
             "symbol": symbol,
             "interval": interval,
@@ -61,14 +106,17 @@ class BinanceFetcher:
             rows.extend(data)
             next_start = data[-1][0] + 1
             if label:
-                pct = min((next_start - origin_start) / max(end_ms - origin_start, 1) * 100, 100.0)
-                print(f"\r  {label} {pct:5.1f}% ({len(rows):,}건)", end="", flush=True)
+                pct = min(
+                    (next_start - origin_start) / max(end_ms - origin_start, 1) * 100,
+                    100.0,
+                )
+                self._emit_progress(label, pct, len(rows))
             if next_start > end_ms:
                 break
             params["startTime"] = next_start
             time.sleep(BINANCE_SLEEP)
         if label:
-            print(f"\r  {label} 100.0% ({len(rows):,}건)", flush=True)
+            self._emit_progress(label, 100.0, len(rows), done=True)
 
         cols = [
             "open_time", "open", "high", "low", "close",
@@ -90,6 +138,7 @@ class BinanceFetcher:
     ) -> pd.DataFrame:
         rows: list = []
         origin_start = start_ms
+        self._progress_marks.pop(label, None)
         params = {
             "symbol": symbol,
             "limit": BINANCE_FUNDING_LIMIT,
@@ -103,14 +152,17 @@ class BinanceFetcher:
             rows.extend(data)
             next_start = data[-1]["fundingTime"] + 1
             if label:
-                pct = min((next_start - origin_start) / max(end_ms - origin_start, 1) * 100, 100.0)
-                print(f"\r  {label} {pct:5.1f}% ({len(rows):,}건)", end="", flush=True)
+                pct = min(
+                    (next_start - origin_start) / max(end_ms - origin_start, 1) * 100,
+                    100.0,
+                )
+                self._emit_progress(label, pct, len(rows))
             if next_start > end_ms:
                 break
             params["startTime"] = next_start
             time.sleep(BINANCE_SLEEP)
         if label:
-            print(f"\r  {label} 100.0% ({len(rows):,}건)", flush=True)
+            self._emit_progress(label, 100.0, len(rows), done=True)
 
         if not rows:
             return pd.DataFrame(columns=["timestamp", "funding_rate"])
@@ -132,6 +184,7 @@ class BinanceFetcher:
     ) -> pd.DataFrame:
         rows: list = []
         origin_start = start_ms
+        self._progress_marks.pop(label, None)
         params = {
             "period": BINANCE_INTERVAL,
             "limit": BINANCE_DATA_LIMIT,
@@ -150,14 +203,17 @@ class BinanceFetcher:
             rows.extend(data)
             next_start = data[-1]["timestamp"] + 1
             if label:
-                pct = min((next_start - origin_start) / max(end_ms - origin_start, 1) * 100, 100.0)
-                print(f"\r  {label} {pct:5.1f}% ({len(rows):,}건)", end="", flush=True)
+                pct = min(
+                    (next_start - origin_start) / max(end_ms - origin_start, 1) * 100,
+                    100.0,
+                )
+                self._emit_progress(label, pct, len(rows))
             if next_start > end_ms:
                 break
             params["startTime"] = next_start
             time.sleep(BINANCE_DATA_SLEEP)
         if label:
-            print(f"\r  {label} 100.0% ({len(rows):,}건)", flush=True)
+            self._emit_progress(label, 100.0, len(rows), done=True)
 
         if not rows:
             return pd.DataFrame(columns=["timestamp", out_col])

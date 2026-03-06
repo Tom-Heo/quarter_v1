@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import h5py
 import numpy as np
@@ -19,6 +20,15 @@ from config import (
     TARGET_FEATURES,
     TARGET_LEN,
 )
+
+LogFn = Callable[[str], None]
+
+
+def _emit(log_fn: LogFn | None, msg: str) -> None:
+    if log_fn is None:
+        print(msg)
+    else:
+        log_fn(msg)
 
 
 def build_aligned_df(
@@ -189,34 +199,39 @@ def _to_ms(date_str: str) -> int:
     )
 
 
-def build_dataset_pipeline(start_date: str, end_date: str, out_path: str) -> None:
+def build_dataset_pipeline(
+    start_date: str,
+    end_date: str,
+    out_path: str,
+    log_fn: LogFn | None = None,
+) -> None:
     from .apicalling import BinanceFetcher
 
     start_ms = _to_ms(start_date)
     end_ms = _to_ms(end_date)
 
-    fetcher = BinanceFetcher()
+    fetcher = BinanceFetcher(log_fn=log_fn)
 
-    print(f"[1/3] klines 수집 중 ({start_date} ~ {end_date})")
+    _emit(log_fn, f"[데이터셋] [1/3] klines 수집 중 ({start_date} ~ {end_date})")
     klines = fetcher.fetch_klines(start_ms, end_ms, label="klines")
 
-    print(f"[2/3] 펀딩비 수집 중")
+    _emit(log_fn, "[데이터셋] [2/3] 펀딩비 수집 중")
     funding = fetcher.fetch_funding_rate(start_ms, end_ms, label="펀딩비")
 
-    print(f"[3/3] 베이시스 수집 중")
+    _emit(log_fn, "[데이터셋] [3/3] 베이시스 수집 중")
     basis = fetcher.fetch_basis(start_ms, end_ms, label="베이시스")
 
-    print("데이터 정렬 중 ...")
+    _emit(log_fn, "[데이터셋] 데이터 정렬 중 ...")
     df = build_aligned_df(klines, funding, basis)
-    print(f"  정렬 완료: {len(df):,}행")
+    _emit(log_fn, f"[데이터셋] 정렬 완료 │ {len(df):,}행")
 
-    print("피처 엔지니어링 중 ...")
+    _emit(log_fn, "[데이터셋] 피처 엔지니어링 중 ...")
     features, targets = compute_features(df)
-    print(f"  피처 {features.shape}, 타겟 {targets.shape}")
+    _emit(log_fn, f"[데이터셋] 피처 {features.shape} │ 타깃 {targets.shape}")
 
-    print(f"HDF5 저장 중 → {out_path}")
+    _emit(log_fn, f"[데이터셋] HDF5 저장 중 │ {out_path}")
     create_hdf5(features, targets, out_path)
-    print("데이터셋 빌드 완료.")
+    _emit(log_fn, "[데이터셋] 빌드 완료.")
 
 
 def is_legacy_hdf5(path: str) -> bool:
