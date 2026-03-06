@@ -119,6 +119,8 @@ class BinanceFetcher:
         df["funding_rate"] = df["fundingRate"].astype(float)
         return df[["timestamp", "funding_rate"]]
 
+    _SKIP_AHEAD_MS = 30 * 24 * 60 * 60 * 1000
+
     def _fetch_data_endpoint(
         self,
         url: str,
@@ -146,6 +148,10 @@ class BinanceFetcher:
         while True:
             data = self._request_with_retry(url, params)
             if not data:
+                if not rows and params["startTime"] + self._SKIP_AHEAD_MS <= end_ms:
+                    params["startTime"] += self._SKIP_AHEAD_MS
+                    time.sleep(BINANCE_DATA_SLEEP)
+                    continue
                 break
             rows.extend(data)
             next_start = data[-1]["timestamp"] + 1

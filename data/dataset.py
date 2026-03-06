@@ -21,6 +21,14 @@ from config import (
 )
 
 
+_NEUTRAL_DEFAULTS = {
+    "funding_rate": 0.0,
+    "basis": 0.0,
+    "open_interest": 1.0,
+    "long_short_ratio": 1.0,
+}
+
+
 def build_aligned_df(
     klines: pd.DataFrame,
     funding: pd.DataFrame,
@@ -36,6 +44,9 @@ def build_aligned_df(
         (open_interest, "open_interest"),
         (long_short_ratio, "long_short_ratio"),
     ]:
+        if sub_df.empty:
+            df[col] = _NEUTRAL_DEFAULTS[col]
+            continue
         s = sub_df.set_index("timestamp")[col]
         s = s[~s.index.duplicated(keep="first")]
         df = df.join(s, how="left")
