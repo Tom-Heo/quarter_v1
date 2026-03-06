@@ -243,9 +243,9 @@ class Heo:
 
             charbonnier = torch.sqrt(diff**2 + self.epsilon_char**2)
 
-            sharp_loss = torch.log(1 + 1000.0 * charbonnier / self.epsilon) / 1000.0
+            sharp_loss = torch.log(1 + 10000.0 * charbonnier / self.epsilon) / 10000.0
 
-            loss = torch.where(abs_diff <= 0.001, sharp_loss, abs_diff)
+            loss = torch.where(abs_diff <= 0.0001, sharp_loss, abs_diff)
 
             if self.weights is not None:
                 w = self.weights.view(1, 1, -1)
