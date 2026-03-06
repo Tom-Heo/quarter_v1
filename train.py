@@ -49,7 +49,7 @@ SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
 EVAL_INTERVAL = 256
 EVAL_SAMPLES = 256
-LOG_INTERVAL = 8
+LOG_INTERVAL = 10
 OUTPUT_DIR = "outputs"
 CKPT_TASK = "direction_binary_cls1"
 CHECK_NUMERICS = True
@@ -595,6 +595,9 @@ def main() -> None:
     output_dir = Path(OUTPUT_DIR)
     epoch = start_epoch
     interval_start = time.time()
+    interval_loss_total = 0.0
+    interval_correct = 0
+    interval_seen = 0
 
     try:
         while True:
@@ -633,23 +636,24 @@ def main() -> None:
                 scheduler.step()
                 global_step += 1
 
+                preds = _direction_predictions(logits)
+                batch_size_now = int(labels.numel())
+                interval_loss_total += loss.item() * batch_size_now
+                interval_correct += int((preds == (labels > 0.5)).sum().item())
+                interval_seen += batch_size_now
+
                 # ── 학습 로그 · 시각화 ────────────────────────────────
                 if global_step % LOG_INTERVAL == 0:
                     elapsed = time.time() - interval_start
                     speed = LOG_INTERVAL / max(elapsed, 1e-6)
                     lr = optimizer.param_groups[0]["lr"]
-                    train_acc = (
-                        (_direction_predictions(logits) == (labels > 0.5))
-                        .float()
-                        .mean()
-                        .item()
-                        * 100.0
-                    )
+                    train_loss = interval_loss_total / max(interval_seen, 1)
+                    train_acc = 100.0 * interval_correct / max(interval_seen, 1)
                     _log(
                         f"[학습] 에폭 {epoch} │ "
                         f"스텝 {step_in_epoch}/{len(train_loader)} │ "
                         f"전체 {global_step:,} │ "
-                        f"BCE {loss.item():.6f} │ "
+                        f"BCE {train_loss:.6f} │ "
                         f"Acc {train_acc:.2f}% │ "
                         f"LR {lr:.2e} │ "
                         f"{speed:.2f} step/s"
@@ -662,6 +666,9 @@ def main() -> None:
                     model.train()
 
                     interval_start = time.time()
+                    interval_loss_total = 0.0
+                    interval_correct = 0
+                    interval_seen = 0
 
                 # ── 평가 · 체크포인트 ─────────────────────────────────
                 if global_step % EVAL_INTERVAL == 0:

@@ -337,7 +337,7 @@ python train.py --restart
 | 스케줄러 | `SequentialLR(LinearLR -> ExponentialLR)` |
 | Exponential gamma | `0.999998` |
 | 손실 함수 | `BCEWithLogitsLoss` |
-| 로그 주기 | `8` step |
+| 로그 주기 | `10` step |
 | 내부 평가 주기 | `256` step |
 | 내부 평가 샘플 수 | `256` |
 | 최고 모델 기준 | `eval accuracy` |
@@ -346,7 +346,7 @@ python train.py --restart
 
 - 학습은 `while True` 루프로 돌며, 수동 중단 전까지 계속됩니다.
 - 각 step마다 `EMA`를 갱신합니다.
-- `LOG_INTERVAL=8`마다 학습 BCE, 학습 accuracy, learning rate, step 속도를 기록합니다.
+- `LOG_INTERVAL=10`마다 학습 BCE, 학습 accuracy, learning rate, step 속도를 기록합니다.
 - 같은 시점에 EMA 파라미터로 시각화를 생성해 `outputs/step_XXXXXX.png`에 저장합니다.
 - `EVAL_INTERVAL=256`마다 랜덤 `256`개 eval 샘플에 대해 BCE와 accuracy를 계산합니다.
 - `best`는 loss가 아니라 accuracy 기준으로 갱신됩니다.
