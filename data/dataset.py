@@ -25,12 +25,16 @@ def build_aligned_df(
     klines: pd.DataFrame,
     funding: pd.DataFrame,
     basis: pd.DataFrame,
+    open_interest: pd.DataFrame,
+    long_short_ratio: pd.DataFrame,
 ) -> pd.DataFrame:
     df = klines.set_index("timestamp")
 
     for sub_df, col in [
         (funding, "funding_rate"),
         (basis, "basis"),
+        (open_interest, "open_interest"),
+        (long_short_ratio, "long_short_ratio"),
     ]:
         s = sub_df.set_index("timestamp")[col]
         s = s[~s.index.duplicated(keep="first")]
@@ -49,12 +53,15 @@ def compute_features(
     L = df["low"].values
     C = df["close"].values
     V = df["volume"].values
+    T = df["trades"].values
+    TBV = df["taker_buy_vol"].values
 
     lnHO = np.log(H / O)
     lnLO = np.log(L / O)
     lnCO = np.log(C / O)
     lnCH = np.log(C / H)
     lnCL = np.log(C / L)
+    lnHL = np.log(H / L)
 
     body = lnCO
     body_safe = np.where(
@@ -78,6 +85,19 @@ def compute_features(
         return np.clip(np.log(ratio), -CLIP_BOUND, CLIP_BOUND)
 
     log_V = _log_return(V)
+    log_T = _log_return(T)
+    taker_buy_ratio = np.where(V > EPSILON, TBV / V, 0.5)
+
+    OI = df["open_interest"].values
+    log_OI = _log_return(OI)
+    ls_ratio = df["long_short_ratio"].values
+
+    hour = df.index.hour.values.astype(np.float64)
+    dow = df.index.dayofweek.values.astype(np.float64)
+    sin_hour = np.sin(2 * np.pi * hour / 24)
+    cos_hour = np.cos(2 * np.pi * hour / 24)
+    sin_dow = np.sin(2 * np.pi * dow / 7)
+    cos_dow = np.cos(2 * np.pi * dow / 7)
 
     funding = df["funding_rate"].values[1:]
     basis_raw = df["basis"].values[1:]
@@ -86,12 +106,30 @@ def compute_features(
     f2 = f2[1:]
     f3 = f3[1:]
     f4 = f4[1:]
+    lnHO = lnHO[1:]
+    lnLO = lnLO[1:]
+    lnCH = lnCH[1:]
+    lnCL = lnCL[1:]
+    lnHL = lnHL[1:]
+    taker_buy_ratio = taker_buy_ratio[1:]
+    ls_ratio = ls_ratio[1:]
+    sin_hour = sin_hour[1:]
+    cos_hour = cos_hour[1:]
+    sin_dow = sin_dow[1:]
+    cos_dow = cos_dow[1:]
     targets = targets[1:]
 
     features = np.column_stack([
         f1, f2, f3, f4,
+        lnHO, lnLO, lnCH, lnCL,
+        lnHL,
         log_V,
+        log_T,
+        taker_buy_ratio,
+        log_OI, ls_ratio,
         funding, basis_raw,
+        sin_hour, cos_hour,
+        sin_dow, cos_dow,
     ]).astype(np.float32)
 
     assert features.shape[1] == NUM_FEATURES
@@ -154,17 +192,23 @@ def build_dataset_pipeline(start_date: str, end_date: str, out_path: str) -> Non
 
     fetcher = BinanceFetcher()
 
-    print(f"[1/3] klines 수집 중 ({start_date} ~ {end_date})")
+    print(f"[1/5] klines 수집 중 ({start_date} ~ {end_date})")
     klines = fetcher.fetch_klines(start_ms, end_ms, label="klines")
 
-    print(f"[2/3] 펀딩비 수집 중")
+    print(f"[2/5] 펀딩비 수집 중")
     funding = fetcher.fetch_funding_rate(start_ms, end_ms, label="펀딩비")
 
-    print(f"[3/3] 베이시스 수집 중")
+    print(f"[3/5] 베이시스 수집 중")
     basis = fetcher.fetch_basis(start_ms, end_ms, label="베이시스")
 
+    print(f"[4/5] 미결제약정 수집 중")
+    oi = fetcher.fetch_open_interest(start_ms, end_ms, label="미결제약정")
+
+    print(f"[5/5] 롱숏비율 수집 중")
+    ls = fetcher.fetch_long_short_ratio(start_ms, end_ms, label="롱숏비율")
+
     print("데이터 정렬 중 ...")
-    df = build_aligned_df(klines, funding, basis)
+    df = build_aligned_df(klines, funding, basis, oi, ls)
     print(f"  정렬 완료: {len(df):,}행")
 
     print("피처 엔지니어링 중 ...")
@@ -181,7 +225,10 @@ def is_legacy_hdf5(path: str) -> bool:
     if not p.exists():
         return False
     with h5py.File(str(p), "r") as f:
-        return "features" not in f
+        if "features" not in f:
+            return True
+        stored = list(f.attrs.get("features", []))
+        return stored != FEATURES
 
 
 class QuarterDataset(Dataset):

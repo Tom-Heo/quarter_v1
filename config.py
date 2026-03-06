@@ -3,9 +3,22 @@ FEATURES = [
     "f2",
     "f3",
     "f4",
+    "lnHO",
+    "lnLO",
+    "lnCH",
+    "lnCL",
+    "lnHL",
     "log_volume",
+    "log_trades",
+    "taker_buy_ratio",
+    "log_oi",
+    "long_short_ratio",
     "funding_rate",
     "basis",
+    "sin_hour",
+    "cos_hour",
+    "sin_dow",
+    "cos_dow",
 ]
 
 NUM_FEATURES = len(FEATURES)

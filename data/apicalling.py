@@ -77,9 +77,9 @@ class BinanceFetcher:
         ]
         df = pd.DataFrame(rows, columns=cols)
         df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-        for c in ("open", "high", "low", "close", "volume"):
+        for c in ("open", "high", "low", "close", "volume", "trades", "taker_buy_vol"):
             df[c] = df[c].astype(float)
-        return df[["timestamp", "open", "high", "low", "close", "volume"]]
+        return df[["timestamp", "open", "high", "low", "close", "volume", "trades", "taker_buy_vol"]]
 
     def fetch_funding_rate(
         self,
@@ -178,6 +178,26 @@ class BinanceFetcher:
                 "contractType": "CURRENT_QUARTER",
             },
             use_symbol=False,
+            label=label,
+        )
+
+    def fetch_open_interest(self, start_ms: int, end_ms: int, label: str = "") -> pd.DataFrame:
+        return self._fetch_data_endpoint(
+            url=f"{self.DATA}/openInterestHist",
+            value_col="sumOpenInterest",
+            out_col="open_interest",
+            start_ms=start_ms,
+            end_ms=end_ms,
+            label=label,
+        )
+
+    def fetch_long_short_ratio(self, start_ms: int, end_ms: int, label: str = "") -> pd.DataFrame:
+        return self._fetch_data_endpoint(
+            url=f"{self.DATA}/globalLongShortAccountRatio",
+            value_col="longShortRatio",
+            out_col="long_short_ratio",
+            start_ms=start_ms,
+            end_ms=end_ms,
             label=label,
         )
 

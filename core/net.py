@@ -24,7 +24,7 @@ class QuarterNet(nn.Module):
         target_features: int = NUM_TARGET_FEATURES,
         target_len: int = TARGET_LEN,
         d_model: int = 2048,
-        num_heads: int = 32,
+        num_heads: int = 16,
         num_blocks: int = _NUM_BLOCKS,
         max_seq_len: int = _MAX_SEQ_LEN,
     ):
