@@ -172,8 +172,10 @@ def _log_eval(
     _log(f"  Eval Loss   │ {eval_loss:.6f}")
     _log(f"  Best Loss   │ {best_eval_loss:.6f}{mark}")
     _log(f"  last.pt     │ 저장 완료")
+    _log("  last_export.pt │ 저장 완료")
     if is_best:
         _log("  best.pt     │ 저장 완료")
+        _log("  best_export.pt │ 저장 완료")
     _log("─" * 54)
 
 
@@ -236,7 +238,9 @@ def _save_checkpoint(
 def _save_export(path: Path, model: nn.Module):
     """EMA 적용 상태에서 호출. 추론 전용 가중치만 저장."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), path)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(model.state_dict(), tmp_path)
+    tmp_path.replace(path)
 
 
 # ── 평가 ─────────────────────────────────────────────────────────────
@@ -546,6 +550,7 @@ def main() -> None:
                     model.eval()
 
                     eval_loss = _evaluate(model, eval_dataset, criterion, device)
+                    _save_export(ckpt_dir / "last_export.pt", model)
 
                     is_best = eval_loss < best_eval_loss
                     if is_best:
