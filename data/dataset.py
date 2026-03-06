@@ -21,32 +21,17 @@ from config import (
 )
 
 
-_NEUTRAL_DEFAULTS = {
-    "funding_rate": 0.0,
-    "basis": 0.0,
-    "open_interest": 1.0,
-    "long_short_ratio": 1.0,
-}
-
-
 def build_aligned_df(
     klines: pd.DataFrame,
     funding: pd.DataFrame,
     basis: pd.DataFrame,
-    open_interest: pd.DataFrame,
-    long_short_ratio: pd.DataFrame,
 ) -> pd.DataFrame:
     df = klines.set_index("timestamp")
 
     for sub_df, col in [
         (funding, "funding_rate"),
         (basis, "basis"),
-        (open_interest, "open_interest"),
-        (long_short_ratio, "long_short_ratio"),
     ]:
-        if sub_df.empty:
-            df[col] = _NEUTRAL_DEFAULTS[col]
-            continue
         s = sub_df.set_index("timestamp")[col]
         s = s[~s.index.duplicated(keep="first")]
         df = df.join(s, how="left")
@@ -99,16 +84,21 @@ def compute_features(
     log_T = _log_return(T)
     taker_buy_ratio = np.where(V > EPSILON, TBV / V, 0.5)
 
-    OI = df["open_interest"].values
-    log_OI = _log_return(OI)
-    ls_ratio = df["long_short_ratio"].values
-
     hour = df.index.hour.values.astype(np.float64)
     dow = df.index.dayofweek.values.astype(np.float64)
     sin_hour = np.sin(2 * np.pi * hour / 24)
     cos_hour = np.cos(2 * np.pi * hour / 24)
     sin_dow = np.sin(2 * np.pi * dow / 7)
     cos_dow = np.cos(2 * np.pi * dow / 7)
+
+    doy = df.index.dayofyear.values.astype(np.float64)
+    sin_year = np.sin(2 * np.pi * doy / 365.25)
+    cos_year = np.cos(2 * np.pi * doy / 365.25)
+
+    minute = df.index.minute.values.astype(np.float64)
+    fund_pos = ((hour * 60 + minute) % 480) / 480.0
+    sin_fund = np.sin(2 * np.pi * fund_pos)
+    cos_fund = np.cos(2 * np.pi * fund_pos)
 
     funding = df["funding_rate"].values[1:]
     basis_raw = df["basis"].values[1:]
@@ -123,11 +113,14 @@ def compute_features(
     lnCL = lnCL[1:]
     lnHL = lnHL[1:]
     taker_buy_ratio = taker_buy_ratio[1:]
-    ls_ratio = ls_ratio[1:]
     sin_hour = sin_hour[1:]
     cos_hour = cos_hour[1:]
     sin_dow = sin_dow[1:]
     cos_dow = cos_dow[1:]
+    sin_year = sin_year[1:]
+    cos_year = cos_year[1:]
+    sin_fund = sin_fund[1:]
+    cos_fund = cos_fund[1:]
     targets = targets[1:]
 
     features = np.column_stack([
@@ -137,10 +130,11 @@ def compute_features(
         log_V,
         log_T,
         taker_buy_ratio,
-        log_OI, ls_ratio,
         funding, basis_raw,
         sin_hour, cos_hour,
         sin_dow, cos_dow,
+        sin_year, cos_year,
+        sin_fund, cos_fund,
     ]).astype(np.float32)
 
     assert features.shape[1] == NUM_FEATURES
@@ -203,23 +197,17 @@ def build_dataset_pipeline(start_date: str, end_date: str, out_path: str) -> Non
 
     fetcher = BinanceFetcher()
 
-    print(f"[1/5] klines 수집 중 ({start_date} ~ {end_date})")
+    print(f"[1/3] klines 수집 중 ({start_date} ~ {end_date})")
     klines = fetcher.fetch_klines(start_ms, end_ms, label="klines")
 
-    print(f"[2/5] 펀딩비 수집 중")
+    print(f"[2/3] 펀딩비 수집 중")
     funding = fetcher.fetch_funding_rate(start_ms, end_ms, label="펀딩비")
 
-    print(f"[3/5] 베이시스 수집 중")
+    print(f"[3/3] 베이시스 수집 중")
     basis = fetcher.fetch_basis(start_ms, end_ms, label="베이시스")
 
-    print(f"[4/5] 미결제약정 수집 중")
-    oi = fetcher.fetch_open_interest(start_ms, end_ms, label="미결제약정")
-
-    print(f"[5/5] 롱숏비율 수집 중")
-    ls = fetcher.fetch_long_short_ratio(start_ms, end_ms, label="롱숏비율")
-
     print("데이터 정렬 중 ...")
-    df = build_aligned_df(klines, funding, basis, oi, ls)
+    df = build_aligned_df(klines, funding, basis)
     print(f"  정렬 완료: {len(df):,}행")
 
     print("피처 엔지니어링 중 ...")

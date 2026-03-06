@@ -119,8 +119,6 @@ class BinanceFetcher:
         df["funding_rate"] = df["fundingRate"].astype(float)
         return df[["timestamp", "funding_rate"]]
 
-    _SKIP_AHEAD_MS = 30 * 24 * 60 * 60 * 1000
-
     def _fetch_data_endpoint(
         self,
         url: str,
@@ -148,10 +146,6 @@ class BinanceFetcher:
         while True:
             data = self._request_with_retry(url, params)
             if not data:
-                if not rows and params["startTime"] + self._SKIP_AHEAD_MS <= end_ms:
-                    params["startTime"] += self._SKIP_AHEAD_MS
-                    time.sleep(BINANCE_DATA_SLEEP)
-                    continue
                 break
             rows.extend(data)
             next_start = data[-1]["timestamp"] + 1
@@ -184,26 +178,6 @@ class BinanceFetcher:
                 "contractType": "CURRENT_QUARTER",
             },
             use_symbol=False,
-            label=label,
-        )
-
-    def fetch_open_interest(self, start_ms: int, end_ms: int, label: str = "") -> pd.DataFrame:
-        return self._fetch_data_endpoint(
-            url=f"{self.DATA}/openInterestHist",
-            value_col="sumOpenInterest",
-            out_col="open_interest",
-            start_ms=start_ms,
-            end_ms=end_ms,
-            label=label,
-        )
-
-    def fetch_long_short_ratio(self, start_ms: int, end_ms: int, label: str = "") -> pd.DataFrame:
-        return self._fetch_data_endpoint(
-            url=f"{self.DATA}/globalLongShortAccountRatio",
-            value_col="longShortRatio",
-            out_col="long_short_ratio",
-            start_ms=start_ms,
-            end_ms=end_ms,
             label=label,
         )
 

@@ -11,14 +11,16 @@ FEATURES = [
     "log_volume",
     "log_trades",
     "taker_buy_ratio",
-    "log_oi",
-    "long_short_ratio",
     "funding_rate",
     "basis",
     "sin_hour",
     "cos_hour",
     "sin_dow",
     "cos_dow",
+    "sin_year",
+    "cos_year",
+    "sin_fund",
+    "cos_fund",
 ]
 
 NUM_FEATURES = len(FEATURES)
