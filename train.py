@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from config import (
     DATASET_DIR,
     EVAL_DATASET_END,
     EVAL_DATASET_START,
+    LOSS_WEIGHTS,
     TRAIN_DATASET_END,
     TRAIN_DATASET_START,
 )
@@ -95,13 +97,35 @@ class EMA:
 
 # ── 로깅 ─────────────────────────────────────────────────────────────
 
+LOG_DIR = "logs"
 
-def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+logger = logging.getLogger("quarter")
+
+
+def _setup_logging() -> None:
+    log_dir = Path(LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"train_{ts}.log"
+
+    fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    fh = logging.FileHandler(str(log_file), encoding="utf-8")
+    fh.setFormatter(fmt)
+
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+
+    logger.setLevel(logging.INFO)
+    logger.addHandler(fh)
+    logger.addHandler(sh)
+
+    logger.info(f"로그 파일: {log_file}")
 
 
 def _log(msg: str):
-    print(f"[{_now()}] {msg}", flush=True)
+    logger.info(msg)
 
 
 def _log_banner(
@@ -114,11 +138,11 @@ def _log_banner(
 ):
     gpu = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
     sep = "═" * 58
-    print(
+    banner = (
         f"\n{sep}\n"
         f"  QuarterNet 학습\n"
         f"{sep}\n"
-        f"  시각        │ {_now()}\n"
+        f"  시각        │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"  모드        │ {mode}\n"
         f"  디바이스    │ {gpu}\n"
         f"  파라미터    │ {n_params:,}\n"
@@ -129,9 +153,10 @@ def _log_banner(
         f"  EMA 계수    │ {EMA_DECAY}\n"
         f"  스케줄러    │ ExponentialLR (γ={SCHEDULER_GAMMA})\n"
         f"  워밍업      │ {warmup_steps:,} 스텝 (1 에폭)\n"
-        f"{sep}",
-        flush=True,
+        f"{sep}"
     )
+    for line in banner.splitlines():
+        logger.info(line)
 
 
 def _log_eval(
@@ -367,6 +392,8 @@ def _visualize(
 
 
 def main() -> None:
+    _setup_logging()
+
     parser = argparse.ArgumentParser(description="QuarterNet 학습")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--restart", action="store_true", help="처음부터 새로 학습")
@@ -413,7 +440,7 @@ def main() -> None:
     )
 
     # ── 손실 함수 ─────────────────────────────────────────────────────
-    criterion = Heo.HeoLoss()
+    criterion = Heo.HeoLoss(feature_weights=LOSS_WEIGHTS)
 
     # ── 상태 초기화 ───────────────────────────────────────────────────
     global_step = 0

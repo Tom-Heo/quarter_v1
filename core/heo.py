@@ -223,13 +223,19 @@ class Heo:
             return (alpha * x + beta * raw) / 2
 
     class HeoLoss(nn.Module):
-        def __init__(self, epsilon=1 / (math.e - 1)):
+        def __init__(self, epsilon=1 / (math.e - 1), feature_weights=None):
             super().__init__()
             self.epsilon = epsilon
             self.epsilon_char = 1e-8
+            if feature_weights is not None:
+                self.register_buffer(
+                    "weights", torch.tensor(feature_weights, dtype=torch.float32)
+                )
+            else:
+                self.weights = None
 
         def forward(self, pred, target):
-            pred = pred.float()  # FP32 강제
+            pred = pred.float()
             target = target.float()
 
             diff = pred - target
@@ -240,5 +246,9 @@ class Heo:
             sharp_loss = torch.log(1 + 1000.0 * charbonnier / self.epsilon) / 1000.0
 
             loss = torch.where(abs_diff <= 0.001, sharp_loss, abs_diff)
+
+            if self.weights is not None:
+                w = self.weights.view(1, 1, -1)
+                return (loss * w).sum() / (w.sum() * loss.shape[0] * loss.shape[1])
 
             return loss.mean()
