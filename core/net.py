@@ -4,32 +4,37 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from config import NUM_FEATURES, NUM_TARGET_FEATURES, SEQ_LEN, TARGET_LEN
+from config import NUM_CLS_TOKENS, NUM_DIRECTION_OUTPUTS, NUM_FEATURES, SEQ_LEN
 
 from .block import EmbeddingBlock, QuarterBlock, FFNBlock
 
 _NUM_BLOCKS = 64
-_MAX_SEQ_LEN = SEQ_LEN + TARGET_LEN
+_MAX_SEQ_LEN = SEQ_LEN + NUM_CLS_TOKENS
 
 
 class QuarterNet(nn.Module):
     """
     Input:  (B, SEQ_LEN, NUM_FEATURES)
-    Output: (B, TARGET_LEN, NUM_TARGET_FEATURES)
+    Output: (B,)
     """
 
     def __init__(
         self,
         features: int = NUM_FEATURES,
-        target_features: int = NUM_TARGET_FEATURES,
-        target_len: int = TARGET_LEN,
+        direction_outputs: int = NUM_DIRECTION_OUTPUTS,
+        num_cls_tokens: int = NUM_CLS_TOKENS,
         d_model: int = 2048,
         num_heads: int = 16,
         num_blocks: int = _NUM_BLOCKS,
         max_seq_len: int = _MAX_SEQ_LEN,
     ):
         super().__init__()
-        self.target_len = target_len
+        if num_cls_tokens != 1:
+            raise ValueError("QuarterNet은 현재 단일 CLS 토큰만 지원합니다.")
+        if direction_outputs != 1:
+            raise ValueError("QuarterNet은 현재 단일 방향 logit만 지원합니다.")
+
+        self.num_cls_tokens = num_cls_tokens
 
         self.embedding1 = EmbeddingBlock(features, d_model)
         self.embedding2 = FFNBlock(d_model)
@@ -38,10 +43,10 @@ class QuarterNet(nn.Module):
             for _ in range(num_blocks)
         )
 
-        self.cls_tokens = nn.Parameter(torch.zeros(1, target_len, d_model))
+        self.cls_tokens = nn.Parameter(torch.zeros(1, num_cls_tokens, d_model))
         nn.init.normal_(self.cls_tokens, std=0.02)
         self.head1 = FFNBlock(d_model)
-        self.head2 = nn.Linear(d_model, target_features, bias=False)
+        self.head2 = nn.Linear(d_model, direction_outputs, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding1(x)
@@ -50,6 +55,7 @@ class QuarterNet(nn.Module):
         x = torch.cat([x, cls], dim=1)
         for block in self.blocks:
             x = checkpoint(block, x, use_reentrant=False)
-        x = x[:, -self.target_len :, :]
+        x = x[:, -self.num_cls_tokens :, :]
         x = self.head1(x)
-        return self.head2(x)
+        x = self.head2(x)
+        return x.squeeze(-1).squeeze(-1)

@@ -21,7 +21,7 @@ from data.dataset import QuarterDataset, build_dataset_pipeline, is_legacy_hdf5
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 LOG_DIR = PROJECT_ROOT / "logs"
-DEFAULT_SAMPLES = 100
+DEFAULT_SAMPLES = 1000
 DEFAULT_BATCH_SIZE = 1
 PROGRESS_LOG_STEPS = 10
 
@@ -135,7 +135,13 @@ def _load_model(
         )
 
     model = QuarterNet().to(device)
-    model.load_state_dict(state_dict)
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as exc:
+        raise ValueError(
+            "현재 eval.py는 방향 분류용 export 체크포인트만 지원합니다. "
+            "이전 회귀 체크포인트라면 train.py로 새 체크포인트를 다시 생성해 주세요."
+        ) from exc
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -160,9 +166,13 @@ def _sample_indices(
     return torch.randperm(dataset_len, generator=generator)[:sample_count]
 
 
-def _is_upward(log_returns: torch.Tensor) -> torch.Tensor:
+def _target_is_upward(log_returns: torch.Tensor) -> torch.Tensor:
     # C_95 / O_0 = exp(sum(lnCO_0..95)) 이므로 부호 비교만 하면 된다.
     return log_returns[..., 0].sum(dim=-1) > 0
+
+
+def _prediction_is_upward(logits: torch.Tensor) -> torch.Tensor:
+    return logits > 0
 
 
 def _log_banner(
@@ -179,9 +189,10 @@ def _log_banner(
     sep = "═" * 58
     banner = (
         f"\n{sep}\n"
-        f"  QuarterNet 평가\n"
+        f"  QuarterNet 방향 분류 평가\n"
         f"{sep}\n"
         f"  시각        │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"  태스크      │ 미래 96개 lnCO 누적 방향 분류\n"
         f"  디바이스    │ {_device_name(device)}\n"
         f"  체크포인트  │ {checkpoint_path.name}\n"
         f"  경로        │ {checkpoint_path}\n"
@@ -244,9 +255,9 @@ def _evaluate_direction_accuracy(
             x = torch.stack([pair[0] for pair in pairs]).float().to(device)
             y = torch.stack([pair[1] for pair in pairs]).float().to(device)
 
-            pred = model(x)
-            pred_dir = _is_upward(pred)
-            true_dir = _is_upward(y)
+            logits = model(x)
+            pred_dir = _prediction_is_upward(logits)
+            true_dir = _target_is_upward(y)
 
             correct += int((pred_dir == true_dir).sum().item())
             processed = min(start + len(batch_indices), total)
@@ -268,12 +279,12 @@ def _evaluate_direction_accuracy(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="QuarterNet 방향성 평가")
+    parser = argparse.ArgumentParser(description="QuarterNet 방향 분류 평가")
     parser.add_argument(
         "--checkpoint",
         type=Path,
         default=Path(CHECKPOINT_DIR) / "last_export.pt",
-        help="EMA 추론용 가중치 파일 경로 (기본: last_export.pt, 없으면 best_export.pt 사용)",
+        help="EMA 방향 분류 추론용 가중치 파일 경로 (기본: last_export.pt, 없으면 best_export.pt 사용)",
     )
     parser.add_argument(
         "--samples",

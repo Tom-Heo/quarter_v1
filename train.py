@@ -11,7 +11,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import ExponentialLR, LinearLR, SequentialLR
@@ -24,7 +23,6 @@ from config import (
     DATASET_DIR,
     EVAL_DATASET_END,
     EVAL_DATASET_START,
-    LOSS_WEIGHTS,
     TRAIN_DATASET_END,
     TRAIN_DATASET_START,
 )
@@ -50,8 +48,10 @@ WEIGHT_DECAY = 1e-4
 SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
 EVAL_INTERVAL = 256
+EVAL_SAMPLES = 256
 LOG_INTERVAL = 8
 OUTPUT_DIR = "outputs"
+CKPT_TASK = "direction_binary_cls1"
 
 
 # ── EMA ──────────────────────────────────────────────────────────────
@@ -135,19 +135,22 @@ def _log_banner(
     n_train: int,
     n_eval: int,
     warmup_steps: int,
+    eval_samples: int,
 ):
     gpu = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
     sep = "═" * 58
     banner = (
         f"\n{sep}\n"
-        f"  QuarterNet 학습\n"
+        f"  QuarterNet 방향 분류 학습\n"
         f"{sep}\n"
         f"  시각        │ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"  모드        │ {mode}\n"
+        f"  태스크      │ 미래 96개 lnCO 누적 방향 분류\n"
         f"  디바이스    │ {gpu}\n"
         f"  파라미터    │ {n_params:,}\n"
         f"  학습 데이터 │ {n_train:,} 샘플\n"
         f"  평가 데이터 │ {n_eval:,} 샘플\n"
+        f"  평가 샘플   │ {min(n_eval, eval_samples):,}개 랜덤 샘플\n"
         f"  배치 크기   │ {BATCH_SIZE}\n"
         f"  학습률      │ {LEARNING_RATE:.2e}\n"
         f"  EMA 계수    │ {EMA_DECAY}\n"
@@ -162,15 +165,17 @@ def _log_banner(
 def _log_eval(
     global_step: int,
     eval_loss: float,
-    best_eval_loss: float,
+    eval_accuracy: float,
+    best_eval_accuracy: float,
     is_best: bool,
 ):
     mark = " ★ 갱신" if is_best else ""
     header = f"── 평가 (스텝 {global_step:,}) "
     header += "─" * max(0, 54 - len(header))
     _log(header)
-    _log(f"  Eval Loss   │ {eval_loss:.6f}")
-    _log(f"  Best Loss   │ {best_eval_loss:.6f}{mark}")
+    _log(f"  Eval BCE    │ {eval_loss:.6f}")
+    _log(f"  Eval Acc    │ {eval_accuracy:.2f}%")
+    _log(f"  Best Acc    │ {best_eval_accuracy:.2f}%{mark}")
     _log(f"  last.pt     │ 저장 완료")
     _log("  last_export.pt │ 저장 완료")
     if is_best:
@@ -218,18 +223,19 @@ def _save_checkpoint(
     ema: EMA,
     global_step: int,
     epoch: int,
-    best_eval_loss: float,
+    best_eval_accuracy: float,
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
+            "task": CKPT_TASK,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "ema": ema.state_dict(),
             "global_step": global_step,
             "epoch": epoch,
-            "best_eval_loss": best_eval_loss,
+            "best_eval_accuracy": best_eval_accuracy,
         },
         path,
     )
@@ -243,6 +249,46 @@ def _save_export(path: Path, model: nn.Module):
     tmp_path.replace(path)
 
 
+def _direction_targets(targets: torch.Tensor) -> torch.Tensor:
+    return (targets[..., 0].sum(dim=-1) > 0).float()
+
+
+def _direction_predictions(logits: torch.Tensor) -> torch.Tensor:
+    return logits > 0
+
+
+def _load_resume_state(
+    path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    ema: EMA,
+    device: torch.device,
+) -> tuple[bool, int, int, float]:
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    if ckpt.get("task") != CKPT_TASK:
+        _log(
+            "체크포인트 구조 불일치 │ 기존 회귀 체크포인트이거나 다른 태스크입니다. "
+            "현재 설정으로 새 학습을 시작합니다."
+        )
+        return False, 0, 0, float("-inf")
+
+    try:
+        model.load_state_dict(ckpt["model"])
+    except RuntimeError as exc:
+        _log(f"체크포인트 로드 실패 │ 현재 모델 구조와 호환되지 않아 재시작합니다. ({exc})")
+        return False, 0, 0, float("-inf")
+
+    optimizer.load_state_dict(ckpt["optimizer"])
+    scheduler.load_state_dict(ckpt["scheduler"])
+    ema.load_state_dict(ckpt["ema"])
+
+    global_step = int(ckpt["global_step"])
+    start_epoch = int(ckpt["epoch"])
+    best_eval_accuracy = float(ckpt.get("best_eval_accuracy", float("-inf")))
+    return True, global_step, start_epoch, best_eval_accuracy
+
+
 # ── 평가 ─────────────────────────────────────────────────────────────
 
 
@@ -251,102 +297,40 @@ def _evaluate(
     eval_dataset: QuarterDataset,
     criterion: nn.Module,
     device: torch.device,
-    n_samples: int = 1,
-) -> float:
+    n_samples: int = EVAL_SAMPLES,
+    batch_size: int = BATCH_SIZE,
+) -> tuple[float, float]:
     model.eval()
-    indices = torch.randint(0, len(eval_dataset), (n_samples,))
-    pairs = [eval_dataset[i] for i in indices]
-    x = torch.stack([p[0] for p in pairs]).to(device)
-    y = torch.stack([p[1] for p in pairs]).to(device)
+    sample_count = min(n_samples, len(eval_dataset))
+    indices = torch.randperm(len(eval_dataset))[:sample_count]
+
+    total_loss = 0.0
+    total_correct = 0
+    total_seen = 0
+
     with torch.no_grad():
-        pred = model(x)
-        loss = criterion(pred, y)
-    return loss.item()
+        for start in range(0, sample_count, batch_size):
+            batch_indices = indices[start : start + batch_size].tolist()
+            pairs = [eval_dataset[i] for i in batch_indices]
+            x = torch.stack([p[0] for p in pairs]).float().to(device)
+            y = torch.stack([p[1] for p in pairs]).float().to(device)
+
+            logits = model(x)
+            labels = _direction_targets(y)
+            loss = criterion(logits, labels)
+            preds = _direction_predictions(logits)
+
+            batch_size_now = len(batch_indices)
+            total_loss += loss.item() * batch_size_now
+            total_correct += int((preds == (labels > 0.5)).sum().item())
+            total_seen += batch_size_now
+
+    avg_loss = total_loss / max(total_seen, 1)
+    accuracy = 100.0 * total_correct / max(total_seen, 1)
+    return avg_loss, accuracy
 
 
-# ── 캔들차트 시각화 ──────────────────────────────────────────────────
-
-
-def _reconstruct_ohlc(log_returns: np.ndarray, base: float = 100.0) -> pd.DataFrame:
-    """(T, 5) = [lnCO, lnHO, lnLO, lnCH, lnCL] → OHLC DataFrame"""
-    T = log_returns.shape[0]
-    opens = np.empty(T)
-    highs = np.empty(T)
-    lows = np.empty(T)
-    closes = np.empty(T)
-
-    opens[0] = base
-    for t in range(T):
-        o = opens[t]
-        closes[t] = o * np.exp(log_returns[t, 0])
-        highs[t] = o * np.exp(log_returns[t, 1])
-        lows[t] = o * np.exp(log_returns[t, 2])
-        if t + 1 < T:
-            opens[t + 1] = closes[t]
-
-    return pd.DataFrame(
-        {"Open": opens, "High": highs, "Low": lows, "Close": closes},
-    )
-
-
-def _draw_candles(ax: plt.Axes, df: pd.DataFrame, label: str, tag_color: str):
-    n = len(df)
-    up_c, dn_c = "#22ab94", "#f23645"
-    body_w = 0.6
-
-    for i in range(n):
-        o, h, l, c = df.iloc[i][["Open", "High", "Low", "Close"]]
-        color = up_c if c >= o else dn_c
-        ax.plot([i, i], [l, h], color=color, linewidth=0.8, solid_capstyle="round")
-        body_lo = min(o, c)
-        body_h = abs(c - o) or (h - l) * 0.005 or 0.01
-        ax.add_patch(
-            plt.Rectangle(
-                (i - body_w / 2, body_lo),
-                body_w,
-                body_h,
-                facecolor=color,
-                edgecolor=color,
-                linewidth=0.6,
-            )
-        )
-
-    y_lo, y_hi = df["Low"].min(), df["High"].max()
-    margin = (y_hi - y_lo) * 0.06 or 0.1
-    ax.set_xlim(-1, n)
-    ax.set_ylim(y_lo - margin, y_hi + margin)
-
-    for sp in ("top", "right"):
-        ax.spines[sp].set_visible(False)
-    for sp in ("left", "bottom"):
-        ax.spines[sp].set_color("#cccccc")
-
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="#e0e0e0", alpha=0.7)
-    ax.xaxis.grid(False)
-    ax.set_axisbelow(True)
-
-    ax.tick_params(axis="both", which="both", labelsize=8, colors="#888888")
-    ax.tick_params(axis="x", labelbottom=False, length=0)
-    ax.set_ylabel("가격", fontsize=9, color="#888888", labelpad=8)
-
-    ax.text(
-        0.02,
-        0.96,
-        label,
-        transform=ax.transAxes,
-        fontsize=12,
-        fontweight="bold",
-        color=tag_color,
-        va="top",
-        ha="left",
-        bbox=dict(
-            boxstyle="round,pad=0.4",
-            facecolor="white",
-            edgecolor=tag_color,
-            alpha=0.85,
-            linewidth=1.2,
-        ),
-    )
+# ── 방향 시각화 ──────────────────────────────────────────────────────
 
 
 def _visualize(
@@ -360,29 +344,81 @@ def _visualize(
     idx = torch.randint(0, len(eval_dataset), (1,)).item()
     x, y_true = eval_dataset[idx]
     with torch.no_grad():
-        y_pred = model(x.unsqueeze(0).to(device))
+        logit = model(x.unsqueeze(0).to(device)).squeeze(0).cpu()
 
-    gt_df = _reconstruct_ohlc(y_true.numpy())
-    pred_df = _reconstruct_ohlc(y_pred.squeeze(0).cpu().numpy())
+    true_up = bool(_direction_targets(y_true.unsqueeze(0)).item())
+    pred_up = bool(_direction_predictions(logit).item())
+    prob_up = torch.sigmoid(logit).item()
+    cum_lnco = np.cumsum(y_true[:, 0].numpy())
+    steps = np.arange(1, len(cum_lnco) + 1)
+    curve_color = "#22ab94" if true_up else "#f23645"
 
-    fig = plt.figure(figsize=(22, 8.5), facecolor="#ffffff")
+    fig = plt.figure(figsize=(18, 5.8), facecolor="#ffffff")
     gs = fig.add_gridspec(
         1,
         2,
-        wspace=0.15,
+        width_ratios=[2.5, 1.0],
+        wspace=0.12,
         left=0.05,
         right=0.97,
         top=0.90,
         bottom=0.08,
     )
-    ax_pred = fig.add_subplot(gs[0, 0])
-    ax_gt = fig.add_subplot(gs[0, 1])
+    ax_curve = fig.add_subplot(gs[0, 0])
+    ax_meta = fig.add_subplot(gs[0, 1])
 
-    for ax in (ax_pred, ax_gt):
-        ax.set_facecolor("#fafafa")
+    ax_curve.set_facecolor("#fafafa")
+    ax_curve.plot(steps, cum_lnco, color=curve_color, linewidth=2.2)
+    ax_curve.axhline(0.0, color="#9e9e9e", linewidth=1.0, linestyle="--")
+    ax_curve.fill_between(steps, cum_lnco, 0.0, color=curve_color, alpha=0.12)
+    ax_curve.set_xlim(1, len(steps))
+    ax_curve.set_xlabel("미래 스텝", fontsize=10, color="#666666")
+    ax_curve.set_ylabel("누적 lnCO", fontsize=10, color="#666666")
+    ax_curve.set_title("Ground Truth 누적 방향 경로", fontsize=13, color="#333333")
+    ax_curve.grid(True, linestyle=":", linewidth=0.6, color="#dcdcdc", alpha=0.8)
+    for sp in ("top", "right"):
+        ax_curve.spines[sp].set_visible(False)
+    for sp in ("left", "bottom"):
+        ax_curve.spines[sp].set_color("#cccccc")
+    ax_curve.tick_params(axis="both", labelsize=9, colors="#777777")
 
-    _draw_candles(ax_pred, pred_df, "Prediction", "#1565c0")
-    _draw_candles(ax_gt, gt_df, "Ground Truth", "#555555")
+    ax_meta.set_facecolor("#fafafa")
+    ax_meta.axis("off")
+    ax_meta.text(
+        0.05,
+        0.88,
+        "Direction Summary",
+        fontsize=16,
+        fontweight="bold",
+        color="#222222",
+        ha="left",
+    )
+    ax_meta.text(
+        0.05,
+        0.68,
+        f"Prediction : {'UP' if pred_up else 'DOWN'}\n"
+        f"P(up)      : {prob_up:.4f}\n"
+        f"True Label  : {'UP' if true_up else 'DOWN'}\n"
+        f"Sample IDX  : {idx:,}",
+        fontsize=12,
+        color="#444444",
+        ha="left",
+        linespacing=1.7,
+        bbox=dict(
+            boxstyle="round,pad=0.6",
+            facecolor="white",
+            edgecolor="#d0d0d0",
+            linewidth=1.0,
+        ),
+    )
+    ax_meta.text(
+        0.05,
+        0.28,
+        f"Final cumulative lnCO : {cum_lnco[-1]:+.6f}",
+        fontsize=11,
+        color=curve_color,
+        ha="left",
+    )
 
     fig.suptitle(
         f"Step {global_step:,}",
@@ -410,7 +446,7 @@ def _visualize(
 def main() -> None:
     _setup_logging()
 
-    parser = argparse.ArgumentParser(description="QuarterNet 학습")
+    parser = argparse.ArgumentParser(description="QuarterNet 방향 분류 학습")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--restart", action="store_true", help="처음부터 새로 학습")
     group.add_argument(
@@ -456,12 +492,13 @@ def main() -> None:
     )
 
     # ── 손실 함수 ─────────────────────────────────────────────────────
-    criterion = Heo.HeoLoss(feature_weights=LOSS_WEIGHTS).to(device)
+    criterion = nn.BCEWithLogitsLoss().to(device)
 
     # ── 상태 초기화 ───────────────────────────────────────────────────
     global_step = 0
     start_epoch = 0
-    best_eval_loss = float("inf")
+    best_eval_accuracy = float("-inf")
+    resumed = False
 
     # ── 체크포인트 로드 ───────────────────────────────────────────────
     ckpt_dir = Path(CHECKPOINT_DIR)
@@ -470,25 +507,31 @@ def main() -> None:
 
     if do_resume and last_pt.exists():
         _log("체크포인트 로드 중...")
-        ckpt = torch.load(last_pt, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        scheduler.load_state_dict(ckpt["scheduler"])
-        ema.load_state_dict(ckpt["ema"])
-        global_step = ckpt["global_step"]
-        start_epoch = ckpt["epoch"]
-        best_eval_loss = ckpt["best_eval_loss"]
-        _log(
-            f"체크포인트 로드 완료 │ 에폭 {start_epoch} │ "
-            f"스텝 {global_step:,} │ Best Loss {best_eval_loss:.6f}"
+        resumed, global_step, start_epoch, best_eval_accuracy = _load_resume_state(
+            last_pt,
+            model,
+            optimizer,
+            scheduler,
+            ema,
+            device,
         )
+        if resumed:
+            _log(
+                f"체크포인트 로드 완료 │ 에폭 {start_epoch} │ "
+                f"스텝 {global_step:,} │ Best Acc {best_eval_accuracy:.2f}%"
+            )
     elif do_resume:
         _log("체크포인트 없음 │ 처음부터 학습을 시작합니다")
     else:
         _log("재시작 모드 │ 처음부터 학습을 시작합니다")
 
     # ── 배너 ──────────────────────────────────────────────────────────
-    mode_str = "재개 (--resume)" if do_resume else "재시작 (--restart)"
+    if do_resume and resumed:
+        mode_str = "재개 (--resume)"
+    elif do_resume:
+        mode_str = "재개 요청 → 호환 불가로 재시작"
+    else:
+        mode_str = "재시작 (--restart)"
     n_params = sum(p.numel() for p in model.parameters())
     _log_banner(
         mode_str,
@@ -497,6 +540,7 @@ def main() -> None:
         len(train_dataset),
         len(eval_dataset),
         warmup_steps,
+        EVAL_SAMPLES,
     )
 
     # ── 학습 루프 ─────────────────────────────────────────────────────
@@ -511,8 +555,9 @@ def main() -> None:
 
             for step_in_epoch, (x, y) in enumerate(train_loader, start=1):
                 x, y = x.to(device), y.to(device)
-                pred = model(x)
-                loss = criterion(pred, y)
+                logits = model(x)
+                labels = _direction_targets(y)
+                loss = criterion(logits, labels)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -527,11 +572,19 @@ def main() -> None:
                     elapsed = time.time() - interval_start
                     speed = LOG_INTERVAL / max(elapsed, 1e-6)
                     lr = optimizer.param_groups[0]["lr"]
+                    train_acc = (
+                        (_direction_predictions(logits) == (labels > 0.5))
+                        .float()
+                        .mean()
+                        .item()
+                        * 100.0
+                    )
                     _log(
                         f"[학습] 에폭 {epoch} │ "
                         f"스텝 {step_in_epoch}/{len(train_loader)} │ "
                         f"전체 {global_step:,} │ "
-                        f"Loss {loss.item():.6f} │ "
+                        f"BCE {loss.item():.6f} │ "
+                        f"Acc {train_acc:.2f}% │ "
                         f"LR {lr:.2e} │ "
                         f"{speed:.2f} step/s"
                     )
@@ -549,12 +602,17 @@ def main() -> None:
                     ema.apply_shadow()
                     model.eval()
 
-                    eval_loss = _evaluate(model, eval_dataset, criterion, device)
+                    eval_loss, eval_accuracy = _evaluate(
+                        model,
+                        eval_dataset,
+                        criterion,
+                        device,
+                    )
                     _save_export(ckpt_dir / "last_export.pt", model)
 
-                    is_best = eval_loss < best_eval_loss
+                    is_best = eval_accuracy > best_eval_accuracy
                     if is_best:
-                        best_eval_loss = eval_loss
+                        best_eval_accuracy = eval_accuracy
                         _save_export(ckpt_dir / "best_export.pt", model)
 
                     ema.restore()
@@ -567,7 +625,7 @@ def main() -> None:
                         ema,
                         global_step,
                         epoch,
-                        best_eval_loss,
+                        best_eval_accuracy,
                     )
                     if is_best:
                         _save_checkpoint(
@@ -578,13 +636,14 @@ def main() -> None:
                             ema,
                             global_step,
                             epoch,
-                            best_eval_loss,
+                            best_eval_accuracy,
                         )
 
                     _log_eval(
                         global_step,
                         eval_loss,
-                        best_eval_loss,
+                        eval_accuracy,
+                        best_eval_accuracy,
                         is_best,
                     )
 

@@ -31,7 +31,6 @@ class FFNBlock(nn.Module):
         gate2 = self.gate2(gate2)
         feature = self.feature(feature)
         x = gate1 * gate2 * feature
-        x = torch.sign(x) * (torch.abs(x) + (1e-8)).pow(1.0 / 3.0)
         x = self.down_proj(x)
         return self.residual_gate(x, residual)
 
@@ -167,6 +166,5 @@ class EmbeddingBlock(nn.Module):
         gate2 = self.gate2(gate2)
         feature = self.feature(feature)
         x = gate1 * gate2 * feature
-        x = torch.sign(x) * (torch.abs(x) + (1e-8)).pow(1.0 / 3.0)
         x = self.down_proj(x)
         return x
