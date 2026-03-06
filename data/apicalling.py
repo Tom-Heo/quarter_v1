@@ -7,6 +7,7 @@ import requests
 
 from config import (
     BINANCE_DATA_LIMIT,
+    BINANCE_DATA_SLEEP,
     BINANCE_FUNDING_LIMIT,
     BINANCE_INTERVAL,
     BINANCE_KLINE_LIMIT,
@@ -154,7 +155,7 @@ class BinanceFetcher:
             if next_start > end_ms:
                 break
             params["startTime"] = next_start
-            time.sleep(BINANCE_SLEEP)
+            time.sleep(BINANCE_DATA_SLEEP)
         if label:
             print(f"\r  {label} 100.0% ({len(rows):,}건)", flush=True)
 
