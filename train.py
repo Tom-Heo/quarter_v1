@@ -233,6 +233,12 @@ def _save_checkpoint(
     )
 
 
+def _save_export(path: Path, model: nn.Module):
+    """EMA 적용 상태에서 호출. 추론 전용 가중치만 저장."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), path)
+
+
 # ── 평가 ─────────────────────────────────────────────────────────────
 
 
@@ -250,14 +256,33 @@ def _evaluate(
     y = torch.stack([p[1] for p in pairs]).to(device)
     with torch.no_grad():
         pred = model(x)
-        loss = criterion(pred, y)
+        pred_ohlc = _reconstruct_ohlc_torch(pred)
+        target_ohlc = _reconstruct_ohlc_torch(y)
+        loss = criterion(pred_ohlc, target_ohlc)
     return loss.item()
 
 
 # ── 캔들차트 시각화 ──────────────────────────────────────────────────
 
 
-def _reconstruct_ohlc(log_returns: np.ndarray, base: float = 100.0) -> pd.DataFrame:
+def _reconstruct_ohlc_torch(log_returns: torch.Tensor, base: float = 1.0) -> torch.Tensor:
+    """(B, T, 5) log returns -> (B, T, 4) OHLC prices (differentiable)"""
+    lnCO = log_returns[..., 0]
+    lnHO = log_returns[..., 1]
+    lnLO = log_returns[..., 2]
+
+    cum_lnCO = torch.cumsum(lnCO, dim=-1)
+    shifted = torch.cat([torch.zeros_like(cum_lnCO[..., :1]), cum_lnCO[..., :-1]], dim=-1)
+
+    opens = base * torch.exp(shifted)
+    closes = base * torch.exp(cum_lnCO)
+    highs = base * torch.exp(shifted + lnHO)
+    lows = base * torch.exp(shifted + lnLO)
+
+    return torch.stack([opens, highs, lows, closes], dim=-1)
+
+
+def _reconstruct_ohlc(log_returns: np.ndarray, base: float = 1.0) -> pd.DataFrame:
     """(T, 5) = [lnCO, lnHO, lnLO, lnCH, lnCL] → OHLC DataFrame"""
     T = log_returns.shape[0]
     opens = np.empty(T)
@@ -496,7 +521,9 @@ def main() -> None:
             for step_in_epoch, (x, y) in enumerate(train_loader, start=1):
                 x, y = x.to(device), y.to(device)
                 pred = model(x)
-                loss = criterion(pred, y)
+                pred_ohlc = _reconstruct_ohlc_torch(pred)
+                target_ohlc = _reconstruct_ohlc_torch(y)
+                loss = criterion(pred_ohlc, target_ohlc)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -535,11 +562,12 @@ def main() -> None:
 
                     eval_loss = _evaluate(model, eval_dataset, criterion, device)
 
-                    ema.restore()
-
                     is_best = eval_loss < best_eval_loss
                     if is_best:
                         best_eval_loss = eval_loss
+                        _save_export(ckpt_dir / "best_export.pt", model)
+
+                    ema.restore()
 
                     _save_checkpoint(
                         last_pt,
