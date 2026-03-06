@@ -73,6 +73,16 @@ python train.py --restart
 python eval.py --checkpoint checkpoints/best_export.pt --samples 1000 --batch-size 8
 ```
 
+
+```bash
+git clone https://github.com/Tom-Heo/quarter_v1.git
+cd quarter_v1
+pip install -r requirements.txt
+apt-get update && apt-get install -y fonts-nanum
+rm -rf "$(python -c 'import matplotlib; print(matplotlib.get_cachedir())')"
+python train.py --restart
+```
+
 추가로 알아둘 점은 다음과 같습니다.
 
 - `python train.py`는 기본적으로 `resume` 동작을 시도합니다.

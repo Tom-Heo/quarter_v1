@@ -52,6 +52,7 @@ EVAL_SAMPLES = 256
 LOG_INTERVAL = 8
 OUTPUT_DIR = "outputs"
 CKPT_TASK = "direction_binary_cls1"
+CHECK_NUMERICS = True
 
 
 # ── EMA ──────────────────────────────────────────────────────────────
@@ -255,6 +256,53 @@ def _direction_targets(targets: torch.Tensor) -> torch.Tensor:
 
 def _direction_predictions(logits: torch.Tensor) -> torch.Tensor:
     return logits > 0
+
+
+def _tensor_finite_summary(name: str, tensor: torch.Tensor) -> str:
+    t = tensor.detach()
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+    nan_count = int(torch.isnan(t).sum().item())
+    inf_count = int(torch.isinf(t).sum().item())
+    summary = (
+        f"{name} │ shape={tuple(t.shape)} │ dtype={t.dtype} │ "
+        f"finite {finite_count}/{total_count} │ nan {nan_count} │ inf {inf_count}"
+    )
+    if finite_count > 0:
+        finite_values = t[finite_mask]
+        summary += (
+            f" │ min {finite_values.min().item():.6e}"
+            f" │ max {finite_values.max().item():.6e}"
+        )
+    return summary
+
+
+def _assert_finite_tensors(
+    epoch: int,
+    step_in_epoch: int,
+    global_step: int,
+    **tensors: torch.Tensor,
+) -> None:
+    if not CHECK_NUMERICS:
+        return
+
+    bad_names = [
+        name
+        for name, tensor in tensors.items()
+        if not torch.isfinite(tensor).all().item()
+    ]
+    if not bad_names:
+        return
+
+    _log(
+        f"[디버그] 비정상 수치 감지 │ 에폭 {epoch} │ "
+        f"스텝 {step_in_epoch} │ 전체 {global_step:,} │ {', '.join(bad_names)}"
+    )
+    for name, tensor in tensors.items():
+        _log(f"  {_tensor_finite_summary(name, tensor)}")
+
+    raise RuntimeError(f"Non-finite tensor detected: {', '.join(bad_names)}")
 
 
 def _load_resume_state(
@@ -555,9 +603,27 @@ def main() -> None:
 
             for step_in_epoch, (x, y) in enumerate(train_loader, start=1):
                 x, y = x.to(device), y.to(device)
+                next_step = global_step + 1
+                _assert_finite_tensors(epoch, step_in_epoch, next_step, x=x, y=y)
                 logits = model(x)
+                _assert_finite_tensors(
+                    epoch, step_in_epoch, next_step, x=x, y=y, logits=logits
+                )
                 labels = _direction_targets(y)
+                _assert_finite_tensors(
+                    epoch, step_in_epoch, next_step, y=y, logits=logits, labels=labels
+                )
                 loss = criterion(logits, labels)
+                _assert_finite_tensors(
+                    epoch,
+                    step_in_epoch,
+                    next_step,
+                    x=x,
+                    y=y,
+                    logits=logits,
+                    labels=labels,
+                    loss=loss,
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
