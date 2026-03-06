@@ -8,7 +8,7 @@ from config import NUM_FEATURES, NUM_TARGET_FEATURES, SEQ_LEN, TARGET_LEN
 
 from .block import EmbeddingBlock, QuarterBlock, FFNBlock
 
-_NUM_BLOCKS = 32
+_NUM_BLOCKS = 64
 _MAX_SEQ_LEN = SEQ_LEN + TARGET_LEN
 
 
