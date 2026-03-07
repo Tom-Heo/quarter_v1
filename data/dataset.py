@@ -11,10 +11,12 @@ from torch.utils.data import Dataset
 
 from config import (
     CLIP_BOUND,
+    DATASET_SCHEMA_VERSION,
     EPSILON,
     FEATURES,
     NUM_FEATURES,
     NUM_TARGET_FEATURES,
+    OHLC_LOG_RATIO_CLIP,
     SEQ_LEN,
     STRIDE,
     TARGET_FEATURES,
@@ -37,6 +39,24 @@ def _format_row_label(row_labels: pd.Index | None, row_idx: int) -> str:
     if row_labels is None:
         return str(row_idx)
     return str(row_labels[row_idx])
+
+
+def _clip_logged_values(
+    name: str,
+    values: np.ndarray,
+    clip_abs: float,
+    log_fn: LogFn | None = None,
+) -> np.ndarray:
+    clipped = np.clip(values, -clip_abs, clip_abs)
+    clipped_count = int(np.count_nonzero(np.abs(values) > clip_abs))
+    if clipped_count > 0:
+        _emit(
+            log_fn,
+            f"[데이터셋] OHLC log-ratio clip │ {name} │ "
+            f"clipped {clipped_count:,}/{values.size:,} │ "
+            f"raw min {values.min():+.6e} │ raw max {values.max():+.6e}",
+        )
+    return clipped
 
 
 def _matrix_finite_summary(name: str, values: np.ndarray) -> str:
@@ -216,11 +236,17 @@ def validate_hdf5(path: str, log_fn: LogFn | None = None) -> None:
             item.decode("utf-8") if isinstance(item, bytes) else str(item)
             for item in f.attrs.get("target_features", [])
         ]
+        stored_version = int(f.attrs.get("schema_version", 0))
 
     if stored_features and stored_features != FEATURES:
         raise ValueError(f"HDF5 feature schema mismatch: {p}")
     if stored_targets and stored_targets != TARGET_FEATURES:
         raise ValueError(f"HDF5 target schema mismatch: {p}")
+    if stored_version != DATASET_SCHEMA_VERSION:
+        raise ValueError(
+            f"HDF5 schema version mismatch: {p} "
+            f"(stored={stored_version}, expected={DATASET_SCHEMA_VERSION})"
+        )
 
     _validate_named_vector("hdf5.mean", mean, FEATURES, log_fn)
     _validate_named_vector("hdf5.std", std, FEATURES, log_fn, positive=True)
@@ -264,6 +290,7 @@ def build_aligned_df(
 
 def compute_features(
     df: pd.DataFrame,
+    log_fn: LogFn | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     O = df["open"].values
     H = df["high"].values
@@ -273,12 +300,21 @@ def compute_features(
     T = df["trades"].values
     TBV = df["taker_buy_vol"].values
 
-    lnHO = np.log(H / O)
-    lnLO = np.log(L / O)
-    lnCO = np.log(C / O)
-    lnCH = np.log(C / H)
-    lnCL = np.log(C / L)
-    lnHL = np.log(H / L)
+    # Keep lnCO raw for direction labels, but clip wick-related log ratios used as features.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lnHO_raw = np.log(H / O)
+        lnLO_raw = np.log(L / O)
+        lnCO = np.log(C / O)
+
+    lnCH_raw = lnCO - lnHO_raw
+    lnCL_raw = lnCO - lnLO_raw
+    lnHL_raw = lnHO_raw - lnLO_raw
+
+    lnHO = _clip_logged_values("lnHO", lnHO_raw, OHLC_LOG_RATIO_CLIP, log_fn)
+    lnLO = _clip_logged_values("lnLO", lnLO_raw, OHLC_LOG_RATIO_CLIP, log_fn)
+    lnCH = _clip_logged_values("lnCH", lnCH_raw, OHLC_LOG_RATIO_CLIP, log_fn)
+    lnCL = _clip_logged_values("lnCL", lnCL_raw, OHLC_LOG_RATIO_CLIP, log_fn)
+    lnHL = _clip_logged_values("lnHL", lnHL_raw, OHLC_LOG_RATIO_CLIP, log_fn)
 
     body = lnCO
     body_safe = np.where(
@@ -292,7 +328,7 @@ def compute_features(
     f3 = np.clip(lnHO * lnCH / body_safe, -CLIP_BOUND, CLIP_BOUND)
     f4 = np.clip(lnLO * lnCL / body_safe, -CLIP_BOUND, CLIP_BOUND)
 
-    targets = np.column_stack([lnCO, lnHO, lnLO, lnCH, lnCL])
+    targets = np.column_stack([lnCO, lnHO_raw, lnLO_raw, lnCH_raw, lnCL_raw])
 
     def _log_return(arr: np.ndarray) -> np.ndarray:
         prev = arr[:-1].copy()
@@ -413,6 +449,7 @@ def create_hdf5(
 
         f.attrs["features"] = FEATURES
         f.attrs["target_features"] = TARGET_FEATURES
+        f.attrs["schema_version"] = DATASET_SCHEMA_VERSION
         f.attrs["mean"] = mean
         f.attrs["std"] = std
         f.attrs["seq_len"] = seq_len
@@ -459,7 +496,7 @@ def build_dataset_pipeline(
     _emit(log_fn, f"[데이터셋] 정렬 완료 │ {len(df):,}행")
 
     _emit(log_fn, "[데이터셋] 피처 엔지니어링 중 ...")
-    features, targets = compute_features(df)
+    features, targets = compute_features(df, log_fn=log_fn)
     _emit(log_fn, f"[데이터셋] 피처 {features.shape} │ 타깃 {targets.shape}")
     row_labels = df.index[1:]
     _validate_named_matrix(
@@ -491,8 +528,20 @@ def is_legacy_hdf5(path: str) -> bool:
     with h5py.File(str(p), "r") as f:
         if "features" not in f:
             return True
-        stored = list(f.attrs.get("features", []))
-        return stored != FEATURES
+        stored = [
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in f.attrs.get("features", [])
+        ]
+        stored_targets = [
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in f.attrs.get("target_features", [])
+        ]
+        stored_version = int(f.attrs.get("schema_version", 0))
+        return (
+            stored != FEATURES
+            or stored_targets != TARGET_FEATURES
+            or stored_version != DATASET_SCHEMA_VERSION
+        )
 
 
 class QuarterDataset(Dataset):
