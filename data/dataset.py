@@ -22,6 +22,8 @@ from config import (
 )
 
 LogFn = Callable[[str], None]
+EXTREME_ZSCORE_THRESHOLD = 50.0
+REPORT_TOP_K = 5
 
 
 def _emit(log_fn: LogFn | None, msg: str) -> None:
@@ -29,6 +31,215 @@ def _emit(log_fn: LogFn | None, msg: str) -> None:
         print(msg)
     else:
         log_fn(msg)
+
+
+def _format_row_label(row_labels: pd.Index | None, row_idx: int) -> str:
+    if row_labels is None:
+        return str(row_idx)
+    return str(row_labels[row_idx])
+
+
+def _matrix_finite_summary(name: str, values: np.ndarray) -> str:
+    finite_mask = np.isfinite(values)
+    finite_count = int(finite_mask.sum())
+    total_count = int(values.size)
+    nan_count = int(np.isnan(values).sum())
+    inf_count = int(np.isinf(values).sum())
+    summary = (
+        f"{name} │ shape={values.shape} │ "
+        f"finite {finite_count}/{total_count} │ nan {nan_count} │ inf {inf_count}"
+    )
+    if finite_count > 0:
+        finite_values = values[finite_mask]
+        summary += (
+            f" │ min {finite_values.min():.6e}"
+            f" │ max {finite_values.max():.6e}"
+        )
+    return summary
+
+
+def _collect_abs_entries(
+    values: np.ndarray,
+    columns: list[str],
+) -> list[tuple[str, float, float, int]]:
+    entries: list[tuple[str, float, float, int]] = []
+    for col_idx, col_name in enumerate(columns):
+        col = values[:, col_idx]
+        finite_idx = np.flatnonzero(np.isfinite(col))
+        if finite_idx.size == 0:
+            continue
+        local_idx = int(np.abs(col[finite_idx]).argmax())
+        row_idx = int(finite_idx[local_idx])
+        value = float(col[row_idx])
+        entries.append((col_name, value, abs(value), row_idx))
+    entries.sort(key=lambda item: item[2], reverse=True)
+    return entries
+
+
+def _format_abs_entries(
+    entries: list[tuple[str, float, float, int]],
+    row_labels: pd.Index | None = None,
+    top_k: int = REPORT_TOP_K,
+) -> list[str]:
+    return [
+        (
+            f"{col_name} {value:+.6e}"
+            f" │ abs {abs_value:.6e}"
+            f" │ row {_format_row_label(row_labels, row_idx)}"
+        )
+        for col_name, value, abs_value, row_idx in entries[:top_k]
+    ]
+
+
+def _collect_nonfinite_entries(
+    values: np.ndarray,
+    columns: list[str],
+) -> list[tuple[str, int, int, int, int]]:
+    entries: list[tuple[str, int, int, int, int]] = []
+    for col_idx, col_name in enumerate(columns):
+        col = values[:, col_idx]
+        bad_idx = np.flatnonzero(~np.isfinite(col))
+        if bad_idx.size == 0:
+            continue
+        entries.append(
+            (
+                col_name,
+                int(bad_idx.size),
+                int(np.isnan(col).sum()),
+                int(np.isinf(col).sum()),
+                int(bad_idx[0]),
+            )
+        )
+    entries.sort(key=lambda item: item[1], reverse=True)
+    return entries
+
+
+def _validate_named_vector(
+    name: str,
+    values: np.ndarray,
+    columns: list[str],
+    log_fn: LogFn | None = None,
+    *,
+    positive: bool = False,
+) -> None:
+    if values.ndim != 1 or values.shape[0] != len(columns):
+        raise ValueError(f"{name} shape mismatch: {values.shape} vs {len(columns)} columns")
+    if not np.isfinite(values).all():
+        bad = [columns[i] for i, value in enumerate(values) if not np.isfinite(value)]
+        raise ValueError(f"{name} contains non-finite values: {', '.join(bad[:REPORT_TOP_K])}")
+    if positive and np.any(values <= 0):
+        bad = [columns[i] for i, value in enumerate(values) if value <= 0]
+        raise ValueError(f"{name} must be positive: {', '.join(bad[:REPORT_TOP_K])}")
+    _emit(
+        log_fn,
+        f"[데이터셋] 검증 │ {name} │ min {values.min():.6e} │ max {values.max():.6e}",
+    )
+
+
+def _validate_named_matrix(
+    name: str,
+    values: np.ndarray,
+    columns: list[str],
+    log_fn: LogFn | None = None,
+    *,
+    row_labels: pd.Index | None = None,
+    extreme_abs_threshold: float | None = None,
+    report_top_abs: bool = False,
+) -> None:
+    if values.ndim != 2 or values.shape[1] != len(columns):
+        raise ValueError(f"{name} shape mismatch: {values.shape} vs {len(columns)} columns")
+
+    _emit(log_fn, f"[데이터셋] 검증 │ {_matrix_finite_summary(name, values)}")
+
+    nonfinite_entries = _collect_nonfinite_entries(values, columns)
+    if nonfinite_entries:
+        reports = [
+            (
+                f"{col_name} │ bad {bad_count}"
+                f" │ nan {nan_count}"
+                f" │ inf {inf_count}"
+                f" │ first {_format_row_label(row_labels, first_row)}"
+            )
+            for col_name, bad_count, nan_count, inf_count, first_row in nonfinite_entries[:REPORT_TOP_K]
+        ]
+        for report in reports:
+            _emit(log_fn, f"[데이터셋] 비정상 {name} │ {report}")
+        raise ValueError(f"{name} contains non-finite values.")
+
+    abs_entries = _collect_abs_entries(values, columns)
+    if report_top_abs and abs_entries:
+        _emit(
+            log_fn,
+            f"[데이터셋] {name} 절댓값 상위 │ "
+            + " │ ".join(_format_abs_entries(abs_entries, row_labels=row_labels)),
+        )
+
+    if extreme_abs_threshold is None:
+        return
+
+    extreme_entries = [
+        entry for entry in abs_entries if entry[2] >= extreme_abs_threshold
+    ]
+    if not extreme_entries:
+        return
+
+    _emit(
+        log_fn,
+        f"[데이터셋] 경고 │ {name} 절댓값이 {extreme_abs_threshold:.1f} 이상인 열이 있습니다.",
+    )
+    _emit(
+        log_fn,
+        f"[데이터셋] {name} 극단치 │ "
+        + " │ ".join(_format_abs_entries(extreme_entries, row_labels=row_labels)),
+    )
+
+
+def validate_hdf5(path: str, log_fn: LogFn | None = None) -> None:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(p)
+
+    _emit(log_fn, f"[데이터셋] HDF5 검증 시작 │ {p}")
+    with h5py.File(str(p), "r") as f:
+        if "features" not in f or "targets" not in f:
+            raise ValueError(f"HDF5 schema mismatch: {p}")
+
+        features = f["features"][:]
+        targets = f["targets"][:]
+        mean = np.asarray(f.attrs["mean"])
+        std = np.asarray(f.attrs["std"])
+        stored_features = [
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in f.attrs.get("features", [])
+        ]
+        stored_targets = [
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in f.attrs.get("target_features", [])
+        ]
+
+    if stored_features and stored_features != FEATURES:
+        raise ValueError(f"HDF5 feature schema mismatch: {p}")
+    if stored_targets and stored_targets != TARGET_FEATURES:
+        raise ValueError(f"HDF5 target schema mismatch: {p}")
+
+    _validate_named_vector("hdf5.mean", mean, FEATURES, log_fn)
+    _validate_named_vector("hdf5.std", std, FEATURES, log_fn, positive=True)
+    _validate_named_matrix(
+        "hdf5.features",
+        features,
+        FEATURES,
+        log_fn,
+        extreme_abs_threshold=EXTREME_ZSCORE_THRESHOLD,
+        report_top_abs=True,
+    )
+    _validate_named_matrix(
+        "hdf5.targets",
+        targets,
+        TARGET_FEATURES,
+        log_fn,
+        report_top_abs=True,
+    )
+    _emit(log_fn, f"[데이터셋] HDF5 검증 완료 │ {p}")
 
 
 def build_aligned_df(
@@ -159,6 +370,8 @@ def create_hdf5(
     seq_len: int = SEQ_LEN,
     target_len: int = TARGET_LEN,
     stride: int = STRIDE,
+    log_fn: LogFn | None = None,
+    row_labels: pd.Index | None = None,
 ) -> None:
     T = features.shape[0]
 
@@ -166,6 +379,26 @@ def create_hdf5(
     std = features.std(axis=0)
     std = np.where(std < 1e-12, 1.0, std)
     features = (features - mean) / std
+
+    _validate_named_vector("feature.mean", mean, FEATURES, log_fn)
+    _validate_named_vector("feature.std", std, FEATURES, log_fn, positive=True)
+    _validate_named_matrix(
+        "normalized.features",
+        features,
+        FEATURES,
+        log_fn,
+        row_labels=row_labels,
+        extreme_abs_threshold=EXTREME_ZSCORE_THRESHOLD,
+        report_top_abs=True,
+    )
+    _validate_named_matrix(
+        "normalized.targets",
+        targets,
+        TARGET_FEATURES,
+        log_fn,
+        row_labels=row_labels,
+        report_top_abs=True,
+    )
 
     n_samples = (T - seq_len - target_len) // stride + 1
     if n_samples <= 0:
@@ -228,9 +461,26 @@ def build_dataset_pipeline(
     _emit(log_fn, "[데이터셋] 피처 엔지니어링 중 ...")
     features, targets = compute_features(df)
     _emit(log_fn, f"[데이터셋] 피처 {features.shape} │ 타깃 {targets.shape}")
+    row_labels = df.index[1:]
+    _validate_named_matrix(
+        "raw.features",
+        features,
+        FEATURES,
+        log_fn,
+        row_labels=row_labels,
+        report_top_abs=True,
+    )
+    _validate_named_matrix(
+        "raw.targets",
+        targets,
+        TARGET_FEATURES,
+        log_fn,
+        row_labels=row_labels,
+        report_top_abs=True,
+    )
 
     _emit(log_fn, f"[데이터셋] HDF5 저장 중 │ {out_path}")
-    create_hdf5(features, targets, out_path)
+    create_hdf5(features, targets, out_path, log_fn=log_fn, row_labels=row_labels)
     _emit(log_fn, "[데이터셋] 빌드 완료.")
 
 

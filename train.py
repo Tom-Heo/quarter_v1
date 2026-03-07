@@ -5,6 +5,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 import matplotlib
 
@@ -23,12 +24,19 @@ from config import (
     DATASET_DIR,
     EVAL_DATASET_END,
     EVAL_DATASET_START,
+    FEATURES,
+    TARGET_FEATURES,
     TRAIN_DATASET_END,
     TRAIN_DATASET_START,
 )
 from core.heo import Heo
 from core.net import QuarterNet
-from data.dataset import QuarterDataset, build_dataset_pipeline, is_legacy_hdf5
+from data.dataset import (
+    QuarterDataset,
+    build_dataset_pipeline,
+    is_legacy_hdf5,
+    validate_hdf5,
+)
 
 _korean_fonts = ["NanumGothic", "Malgun Gothic", "AppleGothic", "DejaVu Sans"]
 for _f in _korean_fonts:
@@ -198,11 +206,20 @@ def _ensure_datasets() -> tuple[Path, Path]:
 
     if not train_path.exists():
         _log(f"학습 데이터셋 생성 중: {train_path}")
-        build_dataset_pipeline(TRAIN_DATASET_START, TRAIN_DATASET_END, str(train_path))
+        build_dataset_pipeline(
+            TRAIN_DATASET_START, TRAIN_DATASET_END, str(train_path), log_fn=_log
+        )
 
     if not eval_path.exists():
         _log(f"평가 데이터셋 생성 중: {eval_path}")
-        build_dataset_pipeline(EVAL_DATASET_START, EVAL_DATASET_END, str(eval_path))
+        build_dataset_pipeline(
+            EVAL_DATASET_START, EVAL_DATASET_END, str(eval_path), log_fn=_log
+        )
+
+    _log(f"학습 데이터셋 검증 중: {train_path}")
+    validate_hdf5(str(train_path), log_fn=_log)
+    _log(f"평가 데이터셋 검증 중: {eval_path}")
+    validate_hdf5(str(eval_path), log_fn=_log)
 
     return train_path, eval_path
 
@@ -270,6 +287,181 @@ def _tensor_finite_summary(name: str, tensor: torch.Tensor) -> str:
     return summary
 
 
+def _tensor_absmax_summary(name: str, tensor: torch.Tensor) -> str:
+    t = tensor.detach()
+    finite_values = t[torch.isfinite(t)]
+    if finite_values.numel() == 0:
+        return f"{name} │ absmax n/a"
+    return f"{name} │ absmax {finite_values.abs().max().item():.6e}"
+
+
+def _log_feature_absmax(
+    name: str,
+    tensor: torch.Tensor,
+    feature_names: list[str],
+    reduce_dims: tuple[int, ...],
+    top_k: int = 5,
+) -> None:
+    if tensor.dim() != len(reduce_dims) + 1 or tensor.size(-1) != len(feature_names):
+        return
+
+    feature_absmax = tensor.detach().abs().amax(dim=reduce_dims)
+    k = min(top_k, feature_absmax.numel())
+    if k <= 0:
+        return
+
+    values, indices = torch.topk(feature_absmax, k=k)
+    parts = [
+        f"{feature_names[idx]} {values[i].item():.6e}"
+        for i, idx in enumerate(indices.tolist())
+    ]
+    _log(f"  {name} feature absmax top{k} │ " + " │ ".join(parts))
+
+
+def _log_batch_absmax(
+    epoch: int,
+    step_in_epoch: int,
+    global_step: int,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    logits: torch.Tensor | None = None,
+    labels: torch.Tensor | None = None,
+    loss: torch.Tensor | None = None,
+) -> None:
+    _log(
+        f"[디버그] 배치 절댓값 │ 에폭 {epoch} │ "
+        f"스텝 {step_in_epoch} │ 전체 {global_step:,}"
+    )
+    for name, tensor in [
+        ("x", x),
+        ("y", y),
+        ("logits", logits),
+        ("labels", labels),
+        ("loss", loss),
+    ]:
+        if tensor is not None:
+            _log(f"  {_tensor_absmax_summary(name, tensor)}")
+
+    _log_feature_absmax("x", x, FEATURES, reduce_dims=(0, 1))
+    _log_feature_absmax("y", y, TARGET_FEATURES, reduce_dims=(0, 1))
+
+
+def _collect_nonfinite_named_tensors(
+    named_tensors: Iterable[tuple[str, torch.Tensor]],
+    limit: int = 8,
+) -> tuple[list[tuple[str, torch.Tensor]], bool]:
+    bad: list[tuple[str, torch.Tensor]] = []
+    for name, tensor in named_tensors:
+        if torch.isfinite(tensor).all().item():
+            continue
+        bad.append((name, tensor))
+        if len(bad) >= limit:
+            return bad, True
+    return bad, False
+
+
+def _assert_finite_named_tensors(
+    scope: str,
+    epoch: int,
+    step_in_epoch: int,
+    global_step: int,
+    named_tensors: Iterable[tuple[str, torch.Tensor]],
+    *,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    logits: torch.Tensor | None = None,
+    labels: torch.Tensor | None = None,
+    loss: torch.Tensor | None = None,
+) -> None:
+    bad, truncated = _collect_nonfinite_named_tensors(named_tensors)
+    if not bad:
+        return
+
+    _log(
+        f"[디버그] 비정상 {scope} 감지 │ 에폭 {epoch} │ "
+        f"스텝 {step_in_epoch} │ 전체 {global_step:,}"
+    )
+    _log_batch_absmax(
+        epoch,
+        step_in_epoch,
+        global_step,
+        x=x,
+        y=y,
+        logits=logits,
+        labels=labels,
+        loss=loss,
+    )
+    for name, tensor in bad:
+        _log(f"  {_tensor_finite_summary(name, tensor)}")
+    if truncated:
+        _log("  ... 추가 비정상 텐서가 더 있습니다.")
+
+    bad_names = ", ".join(name for name, _ in bad)
+    raise RuntimeError(f"Non-finite {scope} detected: {bad_names}")
+
+
+def _iter_named_gradients(
+    module: nn.Module, prefix: str
+) -> Iterable[tuple[str, torch.Tensor]]:
+    for name, param in module.named_parameters():
+        if param.grad is not None:
+            yield f"{prefix}.{name}.grad", param.grad
+
+
+def _iter_named_parameters(
+    module: nn.Module, prefix: str
+) -> Iterable[tuple[str, torch.Tensor]]:
+    for name, param in module.named_parameters():
+        yield f"{prefix}.{name}", param
+
+
+def _iter_model_state_tensors(model: nn.Module) -> Iterable[tuple[str, torch.Tensor]]:
+    for name, param in model.named_parameters():
+        yield f"model.param.{name}", param
+    for name, buf in model.named_buffers():
+        yield f"model.buffer.{name}", buf
+
+
+def _iter_optimizer_state_tensors(
+    model: nn.Module, optimizer: torch.optim.Optimizer
+) -> Iterable[tuple[str, torch.Tensor]]:
+    param_name_by_id = {id(param): name for name, param in model.named_parameters()}
+    for idx, (param, state) in enumerate(optimizer.state.items()):
+        param_name = param_name_by_id.get(id(param), f"param_{idx}")
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                yield f"optimizer.{param_name}.{key}", value
+
+
+def _iter_ema_state_tensors(ema: "EMA") -> Iterable[tuple[str, torch.Tensor]]:
+    for name, tensor in ema.shadow.items():
+        yield f"ema.shadow.{name}", tensor
+
+
+def _assert_finite_resume_state(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    ema: "EMA",
+) -> None:
+    for scope, named_tensors in [
+        ("resume model state", _iter_model_state_tensors(model)),
+        ("resume optimizer state", _iter_optimizer_state_tensors(model, optimizer)),
+        ("resume EMA state", _iter_ema_state_tensors(ema)),
+    ]:
+        bad, truncated = _collect_nonfinite_named_tensors(named_tensors)
+        if not bad:
+            continue
+
+        _log(f"[디버그] 체크포인트 수치 오염 │ {scope}")
+        for name, tensor in bad:
+            _log(f"  {_tensor_finite_summary(name, tensor)}")
+        if truncated:
+            _log("  ... 추가 비정상 텐서가 더 있습니다.")
+
+        bad_names = ", ".join(name for name, _ in bad)
+        raise RuntimeError(f"Non-finite checkpoint state detected: {bad_names}")
+
+
 def _assert_finite_tensors(
     epoch: int,
     step_in_epoch: int,
@@ -324,6 +516,12 @@ def _load_resume_state(
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
     ema.load_state_dict(ckpt["ema"])
+    try:
+        _assert_finite_resume_state(model, optimizer, ema)
+    except RuntimeError as exc:
+        _log(f"체크포인트 수치 오염 감지 │ {exc}")
+        _log("손상된 체크포인트로 판단하여 현재 설정으로 새 학습을 시작합니다.")
+        return False, 0, 0
 
     global_step = int(ckpt["global_step"])
     start_epoch = int(ckpt["epoch"])
@@ -619,7 +817,31 @@ def main() -> None:
 
                 optimizer.zero_grad()
                 loss.backward()
+                _assert_finite_named_tensors(
+                    "gradient",
+                    epoch,
+                    step_in_epoch,
+                    next_step,
+                    _iter_named_gradients(model.embedding1, "embedding1"),
+                    x=x,
+                    y=y,
+                    logits=logits,
+                    labels=labels,
+                    loss=loss,
+                )
                 optimizer.step()
+                _assert_finite_named_tensors(
+                    "parameter",
+                    epoch,
+                    step_in_epoch,
+                    next_step,
+                    _iter_named_parameters(model.embedding1, "embedding1"),
+                    x=x,
+                    y=y,
+                    logits=logits,
+                    labels=labels,
+                    loss=loss,
+                )
 
                 ema.update()
                 scheduler.step()
