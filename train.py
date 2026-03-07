@@ -47,6 +47,7 @@ LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 SCHEDULER_GAMMA = 0.999998
 WARMUP_START_FACTOR = 1e-7
+WARMUP_STEPS = 1000
 EVAL_INTERVAL = 200
 EVAL_SAMPLES = 10
 LOG_INTERVAL = 10
@@ -156,7 +157,7 @@ def _log_banner(
         f"  학습률      │ {LEARNING_RATE:.2e}\n"
         f"  EMA 계수    │ {EMA_DECAY}\n"
         f"  스케줄러    │ ExponentialLR (γ={SCHEDULER_GAMMA})\n"
-        f"  워밍업      │ {warmup_steps:,} 스텝 (1 에폭)\n"
+        f"  워밍업      │ {warmup_steps:,} 스텝\n"
         f"{sep}"
     )
     for line in banner.splitlines():
@@ -521,8 +522,8 @@ def main() -> None:
     # ── EMA ───────────────────────────────────────────────────────────
     ema = EMA(model, decay=EMA_DECAY)
 
-    # ── 스케줄러 (1 에폭 warmup → ExponentialLR) ─────────────────────
-    warmup_steps = len(train_dataset)
+    # ── 스케줄러 (1000 step warmup → ExponentialLR) ──────────────────
+    warmup_steps = WARMUP_STEPS
     warmup_sched = LinearLR(
         optimizer, start_factor=WARMUP_START_FACTOR, total_iters=warmup_steps
     )
